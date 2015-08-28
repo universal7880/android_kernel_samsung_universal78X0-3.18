@@ -110,6 +110,7 @@ struct nlmsgerr {
 #define NETLINK_RX_RING		6
 #define NETLINK_TX_RING		7
 #endif
+#define NETLINK_CAP_ACK			10
 
 struct nl_pktinfo {
 	__u32	group;

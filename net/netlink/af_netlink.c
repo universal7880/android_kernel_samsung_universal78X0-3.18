@@ -83,6 +83,7 @@ struct listeners {
 #define NETLINK_RECV_PKTINFO	0x2
 #define NETLINK_BROADCAST_SEND_ERROR	0x4
 #define NETLINK_RECV_NO_ENOBUFS	0x8
+#define NETLINK_F_CAP_ACK		0x20
 
 static inline int netlink_is_kernel(struct sock *sk)
 {
@@ -1577,6 +1578,13 @@ static int netlink_setsockopt(struct socket *sock, int level, int optname,
 		}
 		err = 0;
 		break;
+	case NETLINK_CAP_ACK:
+		if (val)
+			nlk->flags |= NETLINK_F_CAP_ACK;
+		else
+			nlk->flags &= ~NETLINK_F_CAP_ACK;
+		err = 0;
+		break;
 	default:
 		err = -ENOPROTOOPT;
 	}
@@ -1626,6 +1634,15 @@ static int netlink_getsockopt(struct socket *sock, int level, int optname,
 		val = nlk->flags & NETLINK_RECV_NO_ENOBUFS ? 1 : 0;
 		if (put_user(len, optlen) ||
 		    put_user(val, optval))
+			return -EFAULT;
+		err = 0;
+		break;
+	case NETLINK_CAP_ACK:
+		if (len < sizeof(int))
+			return -EINVAL;
+		len = sizeof(int);
+		val = !!(nlk->flags & NETLINK_F_CAP_ACK);
+		if (put_user(len, optlen) || put_user(val, optval))
 			return -EFAULT;
 		err = 0;
 		break;
@@ -2186,10 +2203,24 @@ void netlink_ack(struct sk_buff *in_skb, struct nlmsghdr *nlh, int err)
 	struct nlmsghdr *rep;
 	struct nlmsgerr *errmsg;
 	size_t payload = sizeof(*errmsg);
+	bool include_payload = false;
 
-	/* error messages get the original request appened */
-	if (err)
-		payload += nlmsg_len(nlh);
+	if (err) {
+		struct sock *sender;
+
+		sender = netlink_lookup(sock_net(in_skb->sk),
+					in_skb->sk->sk_protocol,
+					NETLINK_CB(in_skb).portid);
+		if (!sender)
+			return;
+
+		/* A capped ACK echoes only the request header. */
+		include_payload = !(READ_ONCE(nlk_sk(sender)->flags) &
+				    NETLINK_F_CAP_ACK);
+		sock_put(sender);
+		if (include_payload)
+			payload += nlmsg_len(nlh);
+	}
 
 	skb = netlink_alloc_skb(in_skb->sk, nlmsg_total_size(payload),
 				NETLINK_CB(in_skb).portid, GFP_KERNEL);
@@ -2211,7 +2242,7 @@ void netlink_ack(struct sk_buff *in_skb, struct nlmsghdr *nlh, int err)
 			  NLMSG_ERROR, payload, 0);
 	errmsg = nlmsg_data(rep);
 	errmsg->error = err;
-	memcpy(&errmsg->msg, nlh, err ? nlh->nlmsg_len : sizeof(*nlh));
+	memcpy(&errmsg->msg, nlh, include_payload ? nlh->nlmsg_len : sizeof(*nlh));
 	netlink_unicast(in_skb->sk, skb, NETLINK_CB(in_skb).portid, MSG_DONTWAIT);
 }
 EXPORT_SYMBOL(netlink_ack);
