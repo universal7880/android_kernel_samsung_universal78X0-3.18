@@ -82,6 +82,10 @@ struct Qdisc {
 	struct gnet_stats_basic_cpu __percpu *cpu_bstats;
 	struct gnet_stats_queue	__percpu *cpu_qstats;
 
+#ifdef CONFIG_NET_EGRESS
+	struct tcf_proto __rcu	*egress_cl_list;
+#endif
+
 	struct Qdisc		*next_sched;
 	struct sk_buff		*gso_skb;
 	/*

@@ -380,6 +380,10 @@ static struct tc_action_ops *tc_lookup_action(struct nlattr *kind)
 	return res;
 }
 
+#ifdef CONFIG_NET_EGRESS
+DEFINE_PER_CPU(unsigned int, tc_action_depth);
+#endif
+
 int tcf_action_exec(struct sk_buff *skb, const struct list_head *actions,
 		    struct tcf_result *res)
 {
@@ -393,7 +397,14 @@ int tcf_action_exec(struct sk_buff *skb, const struct list_head *actions,
 	}
 	list_for_each_entry(a, actions, list) {
 repeat:
+#ifdef CONFIG_NET_EGRESS
+		/* Legacy actions may hold a lock while transmitting a packet. */
+		__this_cpu_inc(tc_action_depth);
+#endif
 		ret = a->ops->act(skb, a, res);
+#ifdef CONFIG_NET_EGRESS
+		__this_cpu_dec(tc_action_depth);
+#endif
 		if (TC_MUNGED & skb->tc_verd) {
 			/* copied already, allow trampling */
 			skb->tc_verd = SET_TC_OK2MUNGE(skb->tc_verd);

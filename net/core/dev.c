@@ -2874,6 +2874,22 @@ static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
 	return rc;
 }
 
+#ifdef CONFIG_NET_EGRESS
+static struct static_key egress_needed __read_mostly;
+
+void net_inc_egress_queue(void)
+{
+	static_key_slow_inc(&egress_needed);
+}
+EXPORT_SYMBOL_GPL(net_inc_egress_queue);
+
+void net_dec_egress_queue(void)
+{
+	static_key_slow_dec(&egress_needed);
+}
+EXPORT_SYMBOL_GPL(net_dec_egress_queue);
+#endif
+
 #if IS_ENABLED(CONFIG_CGROUP_NET_PRIO)
 static void skb_update_prio(struct sk_buff *skb)
 {
@@ -2910,6 +2926,67 @@ int dev_loopback_xmit(struct sk_buff *skb)
 	return 0;
 }
 EXPORT_SYMBOL(dev_loopback_xmit);
+
+#ifdef CONFIG_NET_EGRESS
+static struct sk_buff *sch_handle_egress(struct sk_buff *skb, int *ret,
+					struct net_device *dev)
+{
+	struct netdev_queue *rxq = rcu_dereference_bh(dev->ingress_queue);
+	struct tcf_result res;
+	struct tcf_proto *cl;
+	struct Qdisc *q;
+	int action;
+
+	if (!rxq)
+		return skb;
+
+	q = rcu_dereference_bh(rxq->qdisc);
+	cl = rcu_dereference_bh(q->egress_cl_list);
+	if (!cl)
+		return skb;
+
+	if (unlikely(__this_cpu_read(xmit_recursion) >= XMIT_RECURSION_LIMIT)) {
+		qdisc_qstats_drop_cpu(q);
+		kfree_skb(skb);
+		*ret = NET_XMIT_DROP;
+		return NULL;
+	}
+
+	qdisc_pkt_len_init(skb);
+	skb->tc_verd = SET_TC_AT(skb->tc_verd, AT_EGRESS);
+	qdisc_bstats_update_cpu(q, skb);
+
+	/* A classifier action can synchronously send another packet. */
+	__this_cpu_inc(xmit_recursion);
+	action = tc_classify_compat(skb, cl, &res);
+	switch (action) {
+	case TC_ACT_OK:
+	case TC_ACT_RECLASSIFY:
+		skb->tc_index = TC_H_MIN(res.classid);
+		break;
+	case TC_ACT_SHOT:
+		qdisc_qstats_drop_cpu(q);
+		*ret = NET_XMIT_DROP;
+		kfree_skb(skb);
+		skb = NULL;
+		break;
+	case TC_ACT_STOLEN:
+	case TC_ACT_QUEUED:
+		*ret = NET_XMIT_SUCCESS;
+		kfree_skb(skb);
+		skb = NULL;
+		break;
+	case TC_ACT_REDIRECT:
+		skb_do_redirect(skb);
+		*ret = NET_XMIT_SUCCESS;
+		skb = NULL;
+		break;
+	}
+	__this_cpu_dec(xmit_recursion);
+
+	return skb;
+}
+#endif
 
 /**
  *	__dev_queue_xmit - transmit a buffer
@@ -2955,6 +3032,15 @@ static int __dev_queue_xmit(struct sk_buff *skb, void *accel_priv)
 	rcu_read_lock_bh();
 
 	skb_update_prio(skb);
+
+#ifdef CONFIG_NET_EGRESS
+	if (static_key_false(&egress_needed) &&
+	    !__this_cpu_read(tc_action_depth)) {
+		skb = sch_handle_egress(skb, &rc, dev);
+		if (!skb)
+			goto out;
+	}
+#endif
 
 	/* If device/qdisc don't need skb->dst, release it right now while
 	 * its hot in this cpu cache.
