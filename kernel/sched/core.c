@@ -2780,8 +2780,10 @@ static void __sched __schedule(void)
 	unsigned long *switch_count;
 	struct rq *rq;
 	int cpu;
+	bool psi_sleep;
 
 need_resched:
+	psi_sleep = false;
 	preempt_disable();
 	cpu = smp_processor_id();
 	rq = cpu_rq(cpu);
@@ -2806,6 +2808,7 @@ need_resched:
 		if (unlikely(signal_pending_state(prev->state, prev))) {
 			prev->state = TASK_RUNNING;
 		} else {
+			psi_sleep = true;
 			deactivate_task(rq, prev, DEQUEUE_SLEEP);
 			prev->on_rq = 0;
 
@@ -2837,6 +2840,8 @@ need_resched:
 		rq->nr_switches++;
 		rq->curr = next;
 		++*switch_count;
+
+		psi_sched_switch(prev, next, psi_sleep);
 
 		context_switch(rq, prev, next); /* unlocks the rq */
 		/*
