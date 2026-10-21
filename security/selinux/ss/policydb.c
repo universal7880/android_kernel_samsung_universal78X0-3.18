@@ -2237,6 +2237,9 @@ out:
  * Read the configuration data from a policy database binary
  * representation file into a policy database structure.
  */
+/* On-disk capability number. It is not advertised by this kernel. */
+#define POLICYDB_CAPABILITY_NETLINK_XPERM 9
+
 int policydb_read(struct policydb *p, void *fp)
 {
 	struct role_allow *ra, *lra;
@@ -2334,6 +2337,12 @@ int policydb_read(struct policydb *p, void *fp)
 		rc = ebitmap_read(&p->policycaps, fp);
 		if (rc)
 			goto bad;
+		/* Policy must not rely on rules this kernel cannot enforce. */
+		if (ebitmap_get_bit(&p->policycaps, POLICYDB_CAPABILITY_NETLINK_XPERM)) {
+			pr_err("SELinux: policy requires unsupported netlink xperms\n");
+			rc = -EOPNOTSUPP;
+			goto bad;
+		}
 	}
 
 	if (p->policyvers >= POLICYDB_VERSION_PERMISSIVE) {
