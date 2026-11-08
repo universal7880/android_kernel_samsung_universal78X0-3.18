@@ -57,6 +57,7 @@
 	firmware {
 		android {
 			compatible = "android,firmware";
+			vendor.universal7880.device = "a7y17lte";
 			fstab {
 				compatible = "android,fstab";
 				system {

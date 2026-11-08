@@ -11,6 +11,7 @@
 
 /dts-v1/;
 #include "exynos7880-a5y17lte_common.dtsi"
+#include "exynos7880-kor.dtsi"
 #include "exynos7880-a5y17lte_kor_all_gpio_09.dtsi"
 #include "exynos7880-a5y17lte_battery_kor_all.dtsi"
 #include "exynos7880-a5y17lte_fingerprint-sensor_00.dtsi"
