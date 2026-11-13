@@ -12,6 +12,7 @@
  *  GNU General Public License for more details.
  *
  */
+#include <linux/samsung_efs.h>
 #include "../ssp.h"
 
 /*************************************************************************/
@@ -40,7 +41,7 @@
 #define GM_SELFTEST_Z_SPEC_MAX	-200
 
 #define YAS_STATIC_ELLIPSOID_MATRIX 	{10000, 0, 0, 0, 10000, 0, 0, 0, 10000}
-#define MAG_HW_OFFSET_FILE_PATH	"/efs/FactoryApp/hw_offset"
+#define MAG_HW_OFFSET_FILE_PATH	SAMSUNG_EFS_PATH "/FactoryApp/hw_offset"
 
 static int check_data_spec(struct ssp_data *data, int sensortype)
 {

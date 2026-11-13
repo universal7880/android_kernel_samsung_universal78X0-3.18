@@ -12,6 +12,7 @@
  *  GNU General Public License for more details.
  *
  */
+#include <linux/samsung_efs.h>
 #include "../ssp.h"
 
 #define	VENDOR		"AMS"
@@ -22,7 +23,7 @@
 #define	CHIP_ID		"TMD4903"
 #endif
 
-#define CANCELATION_FILE_PATH	"/efs/FactoryApp/prox_cal"
+#define CANCELATION_FILE_PATH	SAMSUNG_EFS_PATH "/FactoryApp/prox_cal"
 #define LCD_LDI_FILE_PATH	"/sys/class/lcd/panel/window_type"
 
 #define LINE_1		'4'

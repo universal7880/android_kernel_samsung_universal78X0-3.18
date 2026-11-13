@@ -12,6 +12,7 @@
  *  GNU General Public License for more details.
  *
  */
+#include <linux/samsung_efs.h>
 #include <linux/kernel.h>
 #include "../ssp.h"
 
@@ -22,7 +23,7 @@
 #define VENDOR		"BOSCH"
 #define CHIP_ID		"BMI168"
 
-#define CALIBRATION_FILE_PATH              "/efs/FactoryApp/gyro_cal_data"
+#define CALIBRATION_FILE_PATH              SAMSUNG_EFS_PATH "/FactoryApp/gyro_cal_data"
 #define CALIBRATION_DATA_AMOUNT            20
 #define SELFTEST_DATA_AMOUNT               64
 #define SELFTEST_LIMITATION_OF_ERROR       5250

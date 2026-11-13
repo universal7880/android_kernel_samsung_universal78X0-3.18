@@ -12,6 +12,7 @@
  *  GNU General Public License for more details.
  *
  */
+#include <linux/samsung_efs.h>
 #include "../ssp.h"
 
 /*************************************************************************/
@@ -34,7 +35,7 @@
 #define MIN_ACCEL_2G		-8192
 #define MAX_ACCEL_4G		16384
 
-#define CALIBRATION_FILE_PATH	"/efs/FactoryApp/calibration_data"
+#define CALIBRATION_FILE_PATH	SAMSUNG_EFS_PATH "/FactoryApp/calibration_data"
 #define CALIBRATION_DATA_AMOUNT	20
 
 static ssize_t accel_vendor_show(struct device *dev,
