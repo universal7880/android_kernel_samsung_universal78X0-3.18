@@ -30,7 +30,7 @@
 #else
 #ifdef VENDER_PATH
 #define FIMC_IS_FW_PATH 			"/system/vendor/firmware/"
-#define FIMC_IS_FW_DUMP_PATH			"/data/camera/"
+#define FIMC_IS_FW_DUMP_PATH			"/data/vendor/camera/"
 #define FIMC_IS_SETFILE_SDCARD_PATH		"/data/media/0/"
 #ifdef ENABLE_IS_CORE
 #define FIMC_IS_FW_SDCARD			"/data/media/0/fimc_is_fw.bin"
