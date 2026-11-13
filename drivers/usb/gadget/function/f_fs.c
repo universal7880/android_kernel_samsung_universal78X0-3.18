@@ -211,6 +211,7 @@ struct ffs_data {
 	unsigned short			strings_count;
 	unsigned short			interfaces_count;
 	unsigned short			eps_count;
+	u8				eps_addrmap[30];
 	unsigned short			_pad1;
 
 	/* filled by __ffs_data_got_strings() */
@@ -356,6 +357,7 @@ struct ffs_desc_helper {
 	struct ffs_data *ffs;
 	unsigned interfaces_count;
 	unsigned eps_count;
+	bool first_speed;
 };
 
 static int  __must_check ffs_epfiles_create(struct ffs_data *ffs);
@@ -2146,7 +2148,8 @@ static int __ffs_data_do_entity(enum ffs_entity_type type,
 				u8 *valuep, struct usb_descriptor_header *desc,
 				void *priv)
 {
-	struct ffs_data *ffs = priv;
+	struct ffs_desc_helper *helper = priv;
+	struct ffs_data *ffs = helper->ffs;
 
 	ENTER();
 
@@ -2160,8 +2163,8 @@ static int __ffs_data_do_entity(enum ffs_entity_type type,
 		 * encountered interface "n" then there are at least
 		 * "n+1" interfaces.
 		 */
-		if (*valuep >= ffs->interfaces_count)
-			ffs->interfaces_count = *valuep + 1;
+		if (*valuep >= helper->interfaces_count)
+			helper->interfaces_count = *valuep + 1;
 		break;
 
 	case FFS_STRING:
@@ -2174,9 +2177,17 @@ static int __ffs_data_do_entity(enum ffs_entity_type type,
 		break;
 
 	case FFS_ENDPOINT:
-		/* Endpoints are indexed from 1 as well. */
-		if ((*valuep & USB_ENDPOINT_NUMBER_MASK) > ffs->eps_count)
-			ffs->eps_count = (*valuep & USB_ENDPOINT_NUMBER_MASK);
+		if (helper->eps_count == ARRAY_SIZE(ffs->eps_addrmap))
+			return -EINVAL;
+		if (helper->first_speed) {
+			if (memchr(ffs->eps_addrmap, *valuep, helper->eps_count))
+				return -EINVAL;
+			ffs->eps_addrmap[helper->eps_count] = *valuep;
+		} else if (helper->eps_count >= ffs->eps_count ||
+			   ffs->eps_addrmap[helper->eps_count] != *valuep) {
+			return -EINVAL;
+		}
+		helper->eps_count++;
 		break;
 	}
 
@@ -2247,12 +2258,25 @@ static int __ffs_data_got_descs(struct ffs_data *ffs,
 	/* Read descriptors */
 	raw_descs = data;
 	for (i = 0; i < 3; ++i) {
+		struct ffs_desc_helper helper = {
+			.ffs = ffs,
+			.first_speed = data == raw_descs,
+		};
+
 		if (!counts[i])
 			continue;
 		ret = ffs_do_descs(counts[i], data, len,
-				   __ffs_data_do_entity, ffs);
+				   __ffs_data_do_entity, &helper);
 		if (ret < 0)
 			goto error;
+		if (helper.first_speed) {
+			ffs->eps_count = helper.eps_count;
+			ffs->interfaces_count = helper.interfaces_count;
+		} else if (helper.eps_count != ffs->eps_count ||
+			   helper.interfaces_count != ffs->interfaces_count) {
+			ret = -EINVAL;
+			goto error;
+		}
 		data += ret;
 		len  -= ret;
 	}
@@ -2481,6 +2505,16 @@ static void ffs_event_add(struct ffs_data *ffs,
 
 /* Bind/unbind USB function hooks *******************************************/
 
+static int ffs_ep_addr2idx(struct ffs_data *ffs, u8 address)
+{
+	unsigned i;
+
+	for (i = 0; i < ffs->eps_count; i++)
+		if (ffs->eps_addrmap[i] == address)
+			return i;
+	return -ENOENT;
+}
+
 static int __ffs_func_bind_do_descs(enum ffs_entity_type type, u8 *valuep,
 				    struct usb_descriptor_header *desc,
 				    void *priv)
@@ -2488,7 +2522,8 @@ static int __ffs_func_bind_do_descs(enum ffs_entity_type type, u8 *valuep,
 	struct usb_endpoint_descriptor *ds = (void *)desc;
 	struct ffs_function *func = priv;
 	struct ffs_ep *ffs_ep;
-	unsigned ep_desc_id, idx;
+	unsigned ep_desc_id;
+	int idx;
 	static const char *speed_names[] = { "full", "high", "super" };
 
 	if (type != FFS_DESCRIPTOR)
@@ -2514,7 +2549,9 @@ static int __ffs_func_bind_do_descs(enum ffs_entity_type type, u8 *valuep,
 	if (!desc || desc->bDescriptorType != USB_DT_ENDPOINT)
 		return 0;
 
-	idx = (ds->bEndpointAddress & USB_ENDPOINT_NUMBER_MASK) - 1;
+	idx = ffs_ep_addr2idx(func->ffs, ds->bEndpointAddress);
+	if (idx < 0)
+		return idx;
 	ffs_ep = func->eps + idx;
 
 	if (unlikely(ffs_ep->descs[ep_desc_id])) {
@@ -2559,7 +2596,7 @@ static int __ffs_func_bind_do_nums(enum ffs_entity_type type, u8 *valuep,
 				   void *priv)
 {
 	struct ffs_function *func = priv;
-	unsigned idx;
+	int idx;
 	u8 newValue;
 
 	switch (type) {
@@ -2592,7 +2629,9 @@ static int __ffs_func_bind_do_nums(enum ffs_entity_type type, u8 *valuep,
 		if (desc->bDescriptorType == USB_DT_ENDPOINT)
 			return 0;
 
-		idx = (*valuep & USB_ENDPOINT_NUMBER_MASK) - 1;
+		idx = ffs_ep_addr2idx(func->ffs, *valuep);
+		if (idx < 0)
+			return idx;
 		if (unlikely(!func->eps[idx].ep))
 			return -EINVAL;
 
