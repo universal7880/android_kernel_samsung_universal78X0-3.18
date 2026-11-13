@@ -56,6 +56,7 @@
 /*--------------------------------------------------------------------------
   Include Files
   ------------------------------------------------------------------------*/
+#include <linux/samsung_efs.h>
 #include <net/addrconf.h>
 #include <wlan_hdd_includes.h>
 #include <vos_api.h>
@@ -8984,7 +8985,7 @@ static int hdd_set_mac_address(struct net_device *dev, void *addr)
 
 #ifdef SEC_READ_MACADDR
 
-#define SEC_MAC_FILEPATH	"/efs/wifi/.mac.info"
+#define SEC_MAC_FILEPATH	SAMSUNG_EFS_PATH "/wifi/.mac.info"
 
 v_MACADDR_t sec_mac_addrs[VOS_MAX_CONCURRENCY_PERSONA];
 static int sec_mac_loaded = 0;

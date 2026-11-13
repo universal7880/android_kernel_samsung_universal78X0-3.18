@@ -12,6 +12,7 @@
  *  GNU General Public License for more details.
  *
  */
+#include <linux/samsung_efs.h>
 #include "../ssp.h"
 
 #define BOSCH_ID	0
@@ -22,7 +23,7 @@
 #define VENDOR_STM	"STM"
 #define CHIP_ID_STM	"LPS25H"
 
-#define CALIBRATION_FILE_PATH		"/efs/FactoryApp/baro_delta"
+#define CALIBRATION_FILE_PATH		SAMSUNG_EFS_PATH "/FactoryApp/baro_delta"
 
 #define	PR_ABS_MAX	8388607		/* 24 bit 2'compl */
 #define	PR_ABS_MIN	-8388608

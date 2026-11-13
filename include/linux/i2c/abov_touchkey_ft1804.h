@@ -18,15 +18,17 @@
 #ifndef __LINUX_ABOV_TOUCHKEY_H
 #define __LINUX_ABOV_TOUCHKEY_H
 
+#include <linux/samsung_efs.h>
+
 #define ABOV_TK_NAME "abov-touchkey-ft1804"
 #define ABOV_ID 0x40
 
 extern int get_lcd_attached(char *);
 extern unsigned int lcdtype;
 
-#define LIGHT_VERSION_PATH		"/efs/FactoryApp/tkey_light_version"
-#define LIGHT_TABLE_PATH		"/efs/FactoryApp/tkey_light"
-#define LIGHT_CRC_PATH			"/efs/FactoryApp/tkey_light_crc"
+#define LIGHT_VERSION_PATH		SAMSUNG_EFS_PATH "/FactoryApp/tkey_light_version"
+#define LIGHT_TABLE_PATH		SAMSUNG_EFS_PATH "/FactoryApp/tkey_light"
+#define LIGHT_CRC_PATH			SAMSUNG_EFS_PATH "/FactoryApp/tkey_light_crc"
 #define LIGHT_TABLE_PATH_LEN		50
 #define LIGHT_VERSION_LEN		25
 #define LIGHT_CRC_SIZE			10

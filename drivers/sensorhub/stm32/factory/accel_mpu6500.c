@@ -12,6 +12,7 @@
  *  GNU General Public License for more details.
  *
  */
+#include <linux/samsung_efs.h>
 #include "../ssp.h"
 
 /*************************************************************************/
@@ -26,7 +27,7 @@
 #define VENDOR_STM	"STM"
 #define CHIP_ID_STM	"K6DS3TR"
 
-#define CALIBRATION_FILE_PATH	"/efs/FactoryApp/calibration_data"
+#define CALIBRATION_FILE_PATH	SAMSUNG_EFS_PATH "/FactoryApp/calibration_data"
 #define CALIBRATION_DATA_AMOUNT	20
 
 #define MAX_ACCEL_1G		8192

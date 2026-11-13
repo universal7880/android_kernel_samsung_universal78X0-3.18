@@ -12,6 +12,7 @@
  *  GNU General Public License for more details.
  *
  */
+#include <linux/samsung_efs.h>
 #include "../ssp.h"
 
 /*************************************************************************/
@@ -20,7 +21,7 @@
 
 #define VENDOR		"STM"
 #define CHIP_ID		"LSM303HA"
-#define MAG_HW_OFFSET_FILE_PATH	"/efs/FactoryApp/hw_offset"
+#define MAG_HW_OFFSET_FILE_PATH	SAMSUNG_EFS_PATH "/FactoryApp/hw_offset"
 #define LSM303HA_STATIC_ELLIPSOID_MATRIX 	{10000, 0, 0, 0, 10000, 0, 0, 0, 10000}
 
 int mag_open_hwoffset(struct ssp_data *data)
