@@ -33,6 +33,7 @@
 #include <linux/debugfs.h>
 #include <linux/of_gpio.h>
 #include <linux/reboot.h>
+#include <linux/sec_batt.h>
 
 #include <media/exynos_mc.h>
 #include <video/mipi_display.h>
@@ -2913,6 +2914,7 @@ static int decon_set_win_config(struct decon_device *decon,
 	struct decon_reg_data *regs;
 	unsigned int bw = 0;
 	int plane_cnt = 0;
+	bool charger_owns_fb;
 
 #if 0
 	dump_win_config(win_config);
@@ -2933,7 +2935,11 @@ static int decon_set_win_config(struct decon_device *decon,
 	/* If producer doesn't need waiting, then release fence set to -1 */
 	win_data->fence = -1;
 
-	if ((decon->state == DECON_STATE_OFF) || (decon->pdata->out_type == DECON_OUT_TUI) ||
+	/* The fbdev charger animation still scans out the boot framebuffer. */
+	charger_owns_fb = IS_ENABLED(CONFIG_BATTERY_SAMSUNG) && lpcharge &&
+			!decon->id && decon->pdata->out_type == DECON_OUT_DSI;
+	if (charger_owns_fb ||
+		(decon->state == DECON_STATE_OFF) || (decon->pdata->out_type == DECON_OUT_TUI) ||
 		(decon->pdata->psr_mode == DECON_MIPI_COMMAND_MODE && decon->ignore_vsync)) {
 		decon->timeline_max++;
 		win_data->fence = decon_create_release_fence(decon);
