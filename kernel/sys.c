@@ -1245,10 +1245,11 @@ static void adjust_netbpfload_release(struct new_utsname *name)
 	struct file *exe;
 	char *path;
 
-	if (!uid_eq(current_euid(), GLOBAL_ROOT_UID))
+	if (!uid_eq(current_euid(), GLOBAL_ROOT_UID) || !current->mm)
 		return;
 
-	exe = get_task_exe_file(current);
+	/* The calling task owns its mm. Do not take task_lock before mmap_sem. */
+	exe = get_mm_exe_file(current->mm);
 	if (!exe)
 		return;
 
