@@ -1239,9 +1239,10 @@ static int override_release(char __user *release, size_t len)
 	return ret;
 }
 
-static void adjust_netbpfload_release(struct new_utsname *name)
+static void adjust_network_bpf_release(struct new_utsname *name)
 {
 	static const char loader[] = "/apex/com.android.tethering/bin/netbpfload";
+	static const char netd[] = "/system/bin/netd";
 	char pathbuf[sizeof(loader)];
 	struct file *exe;
 	char *path;
@@ -1255,7 +1256,7 @@ static void adjust_netbpfload_release(struct new_utsname *name)
 		return;
 
 	path = d_path(&exe->f_path, pathbuf, sizeof(pathbuf));
-	if (!IS_ERR(path) && !strcmp(path, loader))
+	if (!IS_ERR(path) && (!strcmp(path, loader) || !strcmp(path, netd)))
 		strlcpy(name->release, "4.19.236", sizeof(name->release));
 
 	fput(exe);
@@ -1268,7 +1269,7 @@ SYSCALL_DEFINE1(newuname, struct new_utsname __user *, name)
 	down_read(&uts_sem);
 	memcpy(&tmp, utsname(), sizeof(tmp));
 	up_read(&uts_sem);
-	adjust_netbpfload_release(&tmp);
+	adjust_network_bpf_release(&tmp);
 	if (copy_to_user(name, &tmp, sizeof(tmp)))
 		return -EFAULT;
 
