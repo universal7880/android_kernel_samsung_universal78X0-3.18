@@ -93,6 +93,12 @@ int kbasep_mem_profile_debugfs_insert(struct kbase_context *kctx, char *data,
 {
 	int err = 0;
 
+	/* Match the behavior of a build without debugfs for this context. */
+	if (!kctx->kctx_dentry) {
+		kfree(data);
+		return 0;
+	}
+
 	mutex_lock(&kctx->mem_profile_lock);
 
 	dev_dbg(kctx->kbdev->dev, "initialised: %d",

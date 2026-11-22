@@ -401,31 +401,27 @@ static int kbase_open(struct inode *inode, struct file *filp)
 		kbase_ctx_flag_set(kctx, KCTX_INFINITE_CACHE);
 
 #ifdef CONFIG_DEBUG_FS
-	snprintf(kctx_name, 64, "%d_%d", kctx->tgid, kctx->id);
-
-	kctx->kctx_dentry = debugfs_create_dir(kctx_name,
-			kbdev->debugfs_ctx_directory);
-
-	if (IS_ERR_OR_NULL(kctx->kctx_dentry)) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	debugfs_create_file("infinite_cache", 0644, kctx->kctx_dentry,
-			kctx, &kbase_infinite_cache_fops);
-	debugfs_create_file("force_same_va", S_IRUSR | S_IWUSR,
-			kctx->kctx_dentry, kctx, &kbase_force_same_va_fops);
-
 	mutex_init(&kctx->mem_profile_lock);
-
-	kbasep_jd_debugfs_ctx_init(kctx);
-	kbase_debug_mem_view_init(filp);
-
 	kbase_debug_job_fault_context_init(kctx);
 
-	kbase_mem_pool_debugfs_init(kctx->kctx_dentry, &kctx->mem_pool, &kctx->lp_mem_pool);
+	/* A denied debugfs lookup must not prevent opening the GPU. */
+	snprintf(kctx_name, sizeof(kctx_name), "%d_%d", kctx->tgid, kctx->id);
+	kctx->kctx_dentry = debugfs_create_dir(kctx_name,
+			kbdev->debugfs_ctx_directory);
+	if (!IS_ERR_OR_NULL(kctx->kctx_dentry)) {
+		debugfs_create_file("infinite_cache", 0644, kctx->kctx_dentry,
+				kctx, &kbase_infinite_cache_fops);
+		debugfs_create_file("force_same_va", S_IRUSR | S_IWUSR,
+				kctx->kctx_dentry, kctx, &kbase_force_same_va_fops);
 
-	kbase_jit_debugfs_init(kctx);
+		kbasep_jd_debugfs_ctx_init(kctx);
+		kbase_debug_mem_view_init(filp);
+		kbase_mem_pool_debugfs_init(kctx->kctx_dentry, &kctx->mem_pool,
+					   &kctx->lp_mem_pool);
+		kbase_jit_debugfs_init(kctx);
+	} else {
+		kctx->kctx_dentry = NULL;
+	}
 #endif /* CONFIG_DEBUG_FS */
 
 	dev_dbg(kbdev->dev, "created base context\n");
