@@ -23,9 +23,15 @@
 
 extern int get_lcd_attached(char *);
 
-#define LIGHT_VERSION_PATH		"/efs/FactoryApp/tkey_light_version"
-#define LIGHT_TABLE_PATH		"/efs/FactoryApp/tkey_light"
-#define LIGHT_CRC_PATH			"/efs/FactoryApp/tkey_light_crc"
+#ifdef CONFIG_SOC_EXYNOS7880
+#define LIGHT_CALIBRATION_DIR		"/mnt/efs/FactoryApp/"
+#else
+#define LIGHT_CALIBRATION_DIR		"/efs/FactoryApp/"
+#endif
+
+#define LIGHT_VERSION_PATH		LIGHT_CALIBRATION_DIR "tkey_light_version"
+#define LIGHT_TABLE_PATH		LIGHT_CALIBRATION_DIR "tkey_light"
+#define LIGHT_CRC_PATH			LIGHT_CALIBRATION_DIR "tkey_light_crc"
 #define LIGHT_TABLE_PATH_LEN		50
 #define LIGHT_VERSION_LEN		25
 #define LIGHT_CRC_SIZE			10
