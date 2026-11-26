@@ -9,6 +9,9 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
+
+#include <linux/types.h>
+
 #define LZ4_MEM_COMPRESS	(16384)
 #define LZ4HC_MEM_COMPRESS	(262144 + (2 * sizeof(unsigned char *)))
 
@@ -84,4 +87,13 @@ int lz4_decompress(const unsigned char *src, size_t *src_len,
  */
 int lz4_decompress_unknownoutputsize(const unsigned char *src, size_t src_len,
 		unsigned char *dest, size_t *dest_len);
+/*
+ * Bounded block decoding. Returns the decoded byte count or a negative value
+ * on malformed input. The partial variant can stop at target_output_size.
+ */
+int LZ4_decompress_safe(const char *src, char *dst, int compressed_size,
+			int dst_capacity);
+int LZ4_decompress_safe_partial(const char *src, char *dst, int compressed_size,
+			       int target_output_size, int dst_capacity);
+
 #endif
