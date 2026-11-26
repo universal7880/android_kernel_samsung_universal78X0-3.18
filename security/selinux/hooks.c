@@ -3000,7 +3000,11 @@ static int selinux_inode_permission(struct inode *inode, int mask)
 			}
 		}
 		if(isec->initialized != 1) {
-			printk(KERN_ERR "SELinux : inode->i_security is not initialized. not fixed.\n"); 
+			pr_err_ratelimited("SELinux: inode->i_security is not initialized. not fixed. "
+					   "fs=%s dev=%s ino=%lu mode=%#o mask=%#x sid=%u\n",
+					   inode->i_sb->s_type->name, inode->i_sb->s_id,
+					   inode->i_ino, inode->i_mode, mask | flags,
+					   isec->sid);
 		}
 	}
 // ] SEC_SELINUX_PORTING_COMMON
