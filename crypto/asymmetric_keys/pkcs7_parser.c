@@ -265,6 +265,18 @@ int pkcs7_extract_cert(void *context, size_t hdrlen,
 	return 0;
 }
 
+int pkcs7_note_content_type(void *context, size_t hdrlen,
+			    unsigned char tag, const void *value, size_t vlen)
+{
+	struct pkcs7_parse_context *ctx = context;
+	int ret;
+
+	ret = pkcs7_note_OID(context, hdrlen, tag, value, vlen);
+	if (!ret)
+		ctx->msg->data_type = ctx->last_oid;
+	return ret;
+}
+
 /*
  * Save the certificate list
  */
@@ -298,7 +310,6 @@ int pkcs7_note_data(void *context, size_t hdrlen,
 	ctx->msg->data = value;
 	ctx->msg->data_len = vlen;
 	ctx->msg->data_hdrlen = hdrlen;
-	ctx->msg->data_type = ctx->last_oid;
 	return 0;
 }
 
@@ -315,7 +326,7 @@ int pkcs7_sig_note_authenticated_attr(void *context, size_t hdrlen,
 
 	switch (ctx->last_oid) {
 	case OID_messageDigest:
-		if (tag != ASN1_OTS)
+		if (tag != ASN1_OTS || ctx->sinfo->msgdigest)
 			return -EBADMSG;
 		ctx->sinfo->msgdigest = value;
 		ctx->sinfo->msgdigest_len = vlen;

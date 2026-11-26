@@ -34,3 +34,7 @@ extern int pkcs7_validate_trust(struct pkcs7_message *pkcs7,
  * pkcs7_verify.c
  */
 extern int pkcs7_verify(struct pkcs7_message *pkcs7);
+
+/* Supply caller-owned data for a detached PKCS#7 data signature. */
+int pkcs7_supply_detached_data(struct pkcs7_message *pkcs7,
+			      const void *data, size_t datalen);

@@ -338,8 +338,9 @@ int pkcs7_verify(struct pkcs7_message *pkcs7)
 		ret = x509_get_sig_params(x509);
 		if (ret < 0)
 			return ret;
-		pr_debug("X.509[%u] %*phN\n",
-			 n, x509->authority->len, x509->authority->data);
+		if (x509->authority)
+			pr_debug("X.509[%u] %*phN\n", n,
+				 x509->authority->len, x509->authority->data);
 	}
 
 	for (sinfo = pkcs7->signed_infos; sinfo; sinfo = sinfo->next) {
@@ -359,3 +360,21 @@ int pkcs7_verify(struct pkcs7_message *pkcs7)
 	return enopkg;
 }
 EXPORT_SYMBOL_GPL(pkcs7_verify);
+
+int pkcs7_supply_detached_data(struct pkcs7_message *pkcs7,
+			      const void *data, size_t datalen)
+{
+	struct pkcs7_signed_info *sinfo;
+
+	if (pkcs7->data || pkcs7->data_type != OID_data)
+		return -EBADMSG;
+
+	for (sinfo = pkcs7->signed_infos; sinfo; sinfo = sinfo->next)
+		if (sinfo->authattrs && !sinfo->msgdigest)
+			return -EBADMSG;
+
+	pkcs7->data = data;
+	pkcs7->data_len = datalen;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(pkcs7_supply_detached_data);
