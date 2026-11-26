@@ -10,6 +10,7 @@
 #include <linux/file.h>
 #include <linux/highuid.h>
 #include <linux/fs.h>
+#include <linux/stat.h>
 #include <linux/namei.h>
 #include <linux/security.h>
 #include <linux/syscalls.h>
@@ -87,8 +88,8 @@ int vfs_fstat(unsigned int fd, struct kstat *stat)
 }
 EXPORT_SYMBOL(vfs_fstat);
 
-int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
-		int flag)
+static int vfs_fstatat_common(int dfd, const char __user *filename,
+			      struct kstat *stat, int flag, struct statx *statx)
 {
 	struct path path;
 	int error = -EINVAL;
@@ -108,6 +109,16 @@ retry:
 		goto out;
 
 	error = vfs_getattr(&path, stat);
+#ifdef CONFIG_FS_VERITY
+	if (!error && statx) {
+		struct inode *inode = path.dentry->d_inode;
+
+		if (inode->i_sb->s_vop)
+			statx->stx_attributes_mask |= STATX_ATTR_VERITY;
+		if (IS_VERITY(inode))
+			statx->stx_attributes |= STATX_ATTR_VERITY;
+	}
+#endif
 	path_put(&path);
 	if (retry_estale(error, lookup_flags)) {
 		lookup_flags |= LOOKUP_REVAL;
@@ -116,7 +127,62 @@ retry:
 out:
 	return error;
 }
+int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
+		int flag)
+{
+	return vfs_fstatat_common(dfd, filename, stat, flag, NULL);
+}
 EXPORT_SYMBOL(vfs_fstatat);
+
+static struct statx_timestamp statx_timestamp(struct timespec time)
+{
+	return (struct statx_timestamp) {
+		.tv_sec = time.tv_sec,
+		.tv_nsec = time.tv_nsec,
+	};
+}
+
+/*
+ * Supply the statx ABI through the existing VFS getattr operation. Its
+ * results are basic stats with the filesystem attributes we can report.
+ */
+SYSCALL_DEFINE5(statx, int, dfd, const char __user *, filename,
+		unsigned int, flags, unsigned int, mask,
+		struct statx __user *, buffer)
+{
+	struct statx result = { };
+	struct kstat stat = { };
+	int err;
+
+	BUILD_BUG_ON(sizeof(struct statx) != 256);
+	if ((mask & STATX__RESERVED) ||
+	    (flags & AT_STATX_SYNC_TYPE) == AT_STATX_SYNC_TYPE)
+		return -EINVAL;
+
+	err = vfs_fstatat_common(dfd, filename, &stat,
+				flags & ~AT_STATX_SYNC_TYPE, &result);
+	if (err)
+		return err;
+
+	result.stx_mask = STATX_BASIC_STATS;
+	result.stx_blksize = stat.blksize;
+	result.stx_nlink = stat.nlink;
+	result.stx_uid = from_kuid_munged(current_user_ns(), stat.uid);
+	result.stx_gid = from_kgid_munged(current_user_ns(), stat.gid);
+	result.stx_mode = stat.mode;
+	result.stx_ino = stat.ino;
+	result.stx_size = stat.size;
+	result.stx_blocks = stat.blocks;
+	result.stx_atime = statx_timestamp(stat.atime);
+	result.stx_ctime = statx_timestamp(stat.ctime);
+	result.stx_mtime = statx_timestamp(stat.mtime);
+	result.stx_rdev_major = MAJOR(stat.rdev);
+	result.stx_rdev_minor = MINOR(stat.rdev);
+	result.stx_dev_major = MAJOR(stat.dev);
+	result.stx_dev_minor = MINOR(stat.dev);
+
+	return copy_to_user(buffer, &result, sizeof(result)) ? -EFAULT : 0;
+}
 
 int vfs_stat(const char __user *name, struct kstat *stat)
 {

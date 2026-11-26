@@ -708,8 +708,11 @@ __SYSCALL(__NR_memfd_create, sys_memfd_create)
 #define __NR_bpf 280
 __SYSCALL(__NR_bpf, sys_bpf)
 
+#define __NR_statx 291
+__SYSCALL(__NR_statx, sys_statx)
+
 #undef __NR_syscalls
-#define __NR_syscalls 281
+#define __NR_syscalls 292
 
 /*
  * All syscalls below here should go away really,

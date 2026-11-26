@@ -789,6 +789,10 @@ asmlinkage long sys_fchownat(int dfd, const char __user *filename, uid_t user,
 			     gid_t group, int flag);
 asmlinkage long sys_openat(int dfd, const char __user *filename, int flags,
 			   umode_t mode);
+struct statx;
+asmlinkage long sys_statx(int dfd, const char __user *filename,
+			 unsigned int flags, unsigned int mask,
+			 struct statx __user *buffer);
 asmlinkage long sys_newfstatat(int dfd, const char __user *filename,
 			       struct stat __user *statbuf, int flag);
 asmlinkage long sys_fstatat64(int dfd, const char __user *filename,
