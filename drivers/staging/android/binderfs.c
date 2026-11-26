@@ -187,7 +187,19 @@ static int binderfs_add_device(struct super_block *sb,
 	}
 
 	inode_lock(dir);
-	dentry = lookup_one_len(req->name, sb->s_root, strlen(req->name));
+	if (user_req) {
+		dentry = lookup_one_len(req->name, sb->s_root, strlen(req->name));
+	} else {
+		struct qstr name = QSTR_INIT(req->name, strlen(req->name));
+
+		/* SELinux labels the root after fill_super() returns. */
+		dentry = d_hash_and_lookup(sb->s_root, &name);
+		if (!dentry) {
+			dentry = d_alloc(sb->s_root, &name);
+			if (!dentry)
+				dentry = ERR_PTR(-ENOMEM);
+		}
+	}
 	if (IS_ERR(dentry)) {
 		ret = PTR_ERR(dentry);
 	} else if (d_inode(dentry)) {
@@ -195,6 +207,8 @@ static int binderfs_add_device(struct super_block *sb,
 		ret = -EEXIST;
 	} else {
 		d_instantiate(dentry, inode);
+		if (d_unhashed(dentry))
+			d_rehash(dentry);
 		fsnotify_create(dir, dentry);
 		ret = 0;
 	}
