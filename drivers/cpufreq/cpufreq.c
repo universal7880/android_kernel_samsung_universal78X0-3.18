@@ -846,21 +846,31 @@ struct kobject *cpufreq_global_kobject;
 EXPORT_SYMBOL(cpufreq_global_kobject);
 
 static int cpufreq_global_kobject_usage;
+static DEFINE_MUTEX(cpufreq_global_kobject_lock);
 
 int cpufreq_get_global_kobject(void)
 {
-	if (!cpufreq_global_kobject_usage++)
-		return kobject_add(cpufreq_global_kobject,
-				&cpu_subsys.dev_root->kobj, "%s", "cpufreq");
+	int ret = 0;
 
-	return 0;
+	mutex_lock(&cpufreq_global_kobject_lock);
+	if (!cpufreq_global_kobject_usage)
+		ret = kobject_add(cpufreq_global_kobject,
+				  &cpu_subsys.dev_root->kobj, "cpufreq");
+
+	if (!ret)
+		cpufreq_global_kobject_usage++;
+	mutex_unlock(&cpufreq_global_kobject_lock);
+
+	return ret;
 }
 EXPORT_SYMBOL(cpufreq_get_global_kobject);
 
 void cpufreq_put_global_kobject(void)
 {
+	mutex_lock(&cpufreq_global_kobject_lock);
 	if (!--cpufreq_global_kobject_usage)
 		kobject_del(cpufreq_global_kobject);
+	mutex_unlock(&cpufreq_global_kobject_lock);
 }
 EXPORT_SYMBOL(cpufreq_put_global_kobject);
 
@@ -905,6 +915,44 @@ void cpufreq_sysfs_remove_group(const struct attribute_group *attr_grp)
 	cpufreq_put_global_kobject();
 }
 EXPORT_SYMBOL(cpufreq_sysfs_remove_group);
+
+/*
+ * Publish the policy under the global cpufreq directory as well. The first
+ * related CPU identifies the policy even when its managing CPU changes.
+ */
+static void cpufreq_add_policy_link(struct cpufreq_policy *policy)
+{
+	unsigned int cpu = cpumask_first(policy->related_cpus);
+	char name[sizeof("policy4294967295")];
+	int ret;
+
+	snprintf(name, sizeof(name), "policy%u", cpu);
+	ret = cpufreq_get_global_kobject();
+	if (!ret) {
+		ret = sysfs_create_link(cpufreq_global_kobject, &policy->kobj,
+					name);
+		if (!ret) {
+			policy->sysfs_policy_cpu = cpu;
+			return;
+		}
+		cpufreq_put_global_kobject();
+	}
+
+	pr_warn("failed to publish %s: %d\n", name, ret);
+}
+
+static void cpufreq_remove_policy_link(struct cpufreq_policy *policy)
+{
+	char name[sizeof("policy4294967295")];
+
+	if (policy->sysfs_policy_cpu < 0)
+		return;
+
+	snprintf(name, sizeof(name), "policy%d", policy->sysfs_policy_cpu);
+	sysfs_remove_link(cpufreq_global_kobject, name);
+	policy->sysfs_policy_cpu = -1;
+	cpufreq_put_global_kobject();
+}
 
 /* symlink affected CPUs */
 static int cpufreq_add_dev_symlink(struct cpufreq_policy *policy)
@@ -1063,6 +1111,7 @@ static struct cpufreq_policy *cpufreq_policy_alloc(void)
 	if (!zalloc_cpumask_var(&policy->related_cpus, GFP_KERNEL))
 		goto err_free_cpumask;
 
+	policy->sysfs_policy_cpu = -1;
 	INIT_LIST_HEAD(&policy->policy_list);
 	init_rwsem(&policy->rwsem);
 	spin_lock_init(&policy->transition_lock);
@@ -1085,6 +1134,7 @@ static void cpufreq_policy_put_kobj(struct cpufreq_policy *policy)
 
 	blocking_notifier_call_chain(&cpufreq_policy_notifier_list,
 			CPUFREQ_REMOVE_POLICY, policy);
+	cpufreq_remove_policy_link(policy);
 
 	down_read(&policy->rwsem);
 	kobj = &policy->kobj;
@@ -1317,6 +1367,9 @@ static int __cpufreq_add_dev(struct device *dev, struct subsys_interface *sif)
 		policy->user_policy.governor = policy->governor;
 	}
 	up_write(&policy->rwsem);
+
+	if (policy->sysfs_policy_cpu < 0)
+		cpufreq_add_policy_link(policy);
 
 	kobject_uevent(&policy->kobj, KOBJ_ADD);
 	kobject_uevent(&dev->kobj, KOBJ_POLICY_INIT);

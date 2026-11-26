@@ -94,6 +94,7 @@ struct cpufreq_policy {
 	struct list_head        policy_list;
 	struct kobject		kobj;
 	struct completion	kobj_unregister;
+	int			sysfs_policy_cpu; /* -1 if no policy link */
 
 	/*
 	 * The rules for this semaphore:
