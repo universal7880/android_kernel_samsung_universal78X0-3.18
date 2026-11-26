@@ -45,6 +45,10 @@ static int __init fsverity_init(void)
 	if (err)
 		goto err_exit_info_cache;
 
+	err = fsverity_init_signature();
+	if (err)
+		pr_err("Unable to initialize builtin signature verification: %d\n", err);
+
 	pr_debug("Initialized fs-verity\n");
 	return 0;
 

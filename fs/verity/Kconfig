@@ -36,3 +36,16 @@ config FS_VERITY_DEBUG
 	  Enable debugging messages related to fs-verity by default.
 
 	  Say N unless you are an fs-verity developer.
+
+config FS_VERITY_BUILTIN_SIGNATURES
+	bool "Verify fs-verity builtin signatures"
+	depends on FS_VERITY && KEYS && SYSCTL
+	select ASYMMETRIC_KEY_TYPE
+	select ASYMMETRIC_PUBLIC_KEY_SUBTYPE
+	select X509_CERTIFICATE_PARSER
+	select PKCS7_MESSAGE_PARSER
+	help
+	  Verify detached PKCS#7 signatures of fs-verity file digests
+	  against certificates in the .fs-verity keyring. The
+	  fs.verity.require_signatures sysctl can require signatures on
+	  all files with fs-verity enabled.

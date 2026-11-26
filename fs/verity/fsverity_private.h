@@ -72,6 +72,9 @@ struct fsverity_info {
 	u8 root_hash[FS_VERITY_MAX_DIGEST_SIZE];
 	u8 measurement[FS_VERITY_MAX_DIGEST_SIZE];
 	const struct inode *inode;
+#ifdef CONFIG_FS_VERITY_BUILTIN_SIGNATURES
+	bool signature_verified;
+#endif
 };
 
 /*
@@ -93,6 +96,15 @@ struct fsverity_descriptor {
 
 /* Arbitrary limit to bound the kmalloc() size.  Can be changed. */
 #define FS_VERITY_MAX_DESCRIPTOR_SIZE	16384
+#define FS_VERITY_MAX_SIGNATURE_SIZE \
+	(FS_VERITY_MAX_DESCRIPTOR_SIZE - sizeof(struct fsverity_descriptor))
+
+struct fsverity_signed_digest {
+	char magic[8];
+	__le16 digest_algorithm;
+	__le16 digest_size;
+	u8 digest[];
+};
 
 /* hash_algs.c */
 
@@ -137,6 +149,31 @@ void fsverity_free_info(struct fsverity_info *vi);
 
 int __init fsverity_init_info_cache(void);
 void __init fsverity_exit_info_cache(void);
+
+/* signature.c */
+
+#ifdef CONFIG_FS_VERITY_BUILTIN_SIGNATURES
+int __init fsverity_init_signature(void);
+int fsverity_verify_signature(struct fsverity_info *vi,
+			      const struct fsverity_descriptor *desc);
+int fsverity_check_signature_required(const struct fsverity_info *vi);
+#else
+static inline int fsverity_init_signature(void)
+{
+	return 0;
+}
+
+static inline int fsverity_verify_signature(struct fsverity_info *vi,
+					    const struct fsverity_descriptor *desc)
+{
+	return 0;
+}
+
+static inline int fsverity_check_signature_required(const struct fsverity_info *vi)
+{
+	return 0;
+}
+#endif
 
 /* verify.c */
 

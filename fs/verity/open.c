@@ -157,6 +157,9 @@ struct fsverity_info *fsverity_create_info(const struct inode *inode,
 		return ERR_PTR(-EINVAL);
 	}
 
+	if (le32_to_cpu(desc->sig_size) > desc_size - sizeof(*desc))
+		return ERR_PTR(-EBADMSG);
+
 	if (desc->version != 1) {
 		fsverity_err(inode, "Unrecognized descriptor version: %u",
 			     desc->version);
@@ -208,6 +211,7 @@ struct fsverity_info *fsverity_create_info(const struct inode *inode,
 		 vi->tree_params.hash_alg->name,
 		 vi->tree_params.digest_size, vi->measurement);
 
+	err = fsverity_verify_signature(vi, desc);
 out:
 	if (err) {
 		fsverity_free_info(vi);
@@ -242,7 +246,7 @@ static int ensure_verity_info(struct inode *inode)
 	int res;
 
 	if (vi)
-		return 0;
+		return fsverity_check_signature_required(vi);
 
 	res = inode->i_sb->s_vop->get_verity_descriptor(inode, NULL, 0);
 	if (res < 0) {
