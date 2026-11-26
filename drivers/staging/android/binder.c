@@ -73,6 +73,7 @@
 
 #include "binder.h"
 #include "binder_alloc.h"
+#include "binder_internal.h"
 #include "binder_trace.h"
 
 int system_server_pid = 0;
@@ -92,13 +93,13 @@ static struct dentry *binder_debugfs_dir_entry_proc;
 static atomic_t binder_last_id;
 static struct workqueue_struct *binder_deferred_workqueue;
 
-#define BINDER_DEBUG_ENTRY(name) \
+#define BINDER_DEBUG_ENTRY(scope, name) \
 static int binder_##name##_open(struct inode *inode, struct file *file) \
 { \
 	return single_open(file, binder_##name##_show, inode->i_private); \
 } \
 \
-static const struct file_operations binder_##name##_fops = { \
+scope const struct file_operations binder_##name##_fops = { \
 	.owner = THIS_MODULE, \
 	.open = binder_##name##_open, \
 	.read = seq_read, \
@@ -107,7 +108,7 @@ static const struct file_operations binder_##name##_fops = { \
 }
 
 static int binder_proc_show(struct seq_file *m, void *unused);
-BINDER_DEBUG_ENTRY(proc);
+BINDER_DEBUG_ENTRY(static, proc);
 
 /* This is only defined in include/asm-arm/sizes.h */
 #ifndef SZ_1K
@@ -143,7 +144,7 @@ static uint32_t binder_debug_mask = BINDER_DEBUG_USER_ERROR |
 	BINDER_DEBUG_FAILED_TRANSACTION | BINDER_DEBUG_DEAD_TRANSACTION;
 module_param_named(debug_mask, binder_debug_mask, uint, S_IWUSR | S_IRUGO);
 
-static char *binder_devices_param = CONFIG_ANDROID_BINDER_DEVICES;
+char *binder_devices_param = CONFIG_ANDROID_BINDER_DEVICES;
 module_param_named(devices, binder_devices_param, charp, S_IRUGO);
 
 static DECLARE_WAIT_QUEUE_HEAD(binder_user_error_wait);
@@ -232,7 +233,7 @@ struct binder_transaction_log_entry {
 	int return_error_line;
 	uint32_t return_error;
 	uint32_t return_error_param;
-	const char *context_name;
+	char context_name[BINDERFS_MAX_NAME + 1];
 };
 struct binder_transaction_log {
 	atomic_t cur;
@@ -262,19 +263,13 @@ static struct binder_transaction_log_entry *binder_transaction_log_add(
 	return e;
 }
 
-struct binder_context {
-	struct binder_node *binder_context_mgr_node;
-	struct mutex context_mgr_node_lock;
+void binderfs_device_release(struct kref *ref)
+{
+	struct binder_device *device = container_of(ref, struct binder_device, ref);
 
-	kuid_t binder_context_mgr_uid;
-	const char *name;
-};
-
-struct binder_device {
-	struct hlist_node hlist;
-	struct miscdevice miscdev;
-	struct binder_context context;
-};
+	kfree(device->context.name);
+	kfree(device);
+}
 
 /**
  * struct binder_work - work enqueued on a worklist
@@ -2877,7 +2872,8 @@ static void binder_transaction(struct binder_proc *proc,
 	e->target_handle = tr->target.handle;
 	e->data_size = tr->data_size;
 	e->offsets_size = tr->offsets_size;
-	e->context_name = proc->context->name;
+	strscpy(e->context_name, proc->context->name,
+		sizeof(e->context_name));
 
 	if (reply) {
 		binder_inner_proc_lock(proc);
@@ -4514,12 +4510,17 @@ static struct binder_thread *binder_get_thread(struct binder_proc *proc)
 
 static void binder_free_proc(struct binder_proc *proc)
 {
+	struct binder_device *device =
+		container_of(proc->context, struct binder_device, context);
+
 	BUG_ON(!list_empty(&proc->todo));
 	BUG_ON(!list_empty(&proc->delivered_death));
 	WARN_ON_ONCE(proc->outstanding_txns);
 	binder_alloc_deferred_release(&proc->alloc);
 	put_task_struct(proc->tsk);
 	binder_stats_deleted(BINDER_STAT_PROC);
+	if (device->binderfs)
+		kref_put(&device->ref, binderfs_device_release);
 	kfree(proc);
 }
 
@@ -5236,8 +5237,13 @@ static int binder_open(struct inode *nodp, struct file *filp)
 		proc->default_priority.prio = NICE_TO_PRIO(0);
 	}
 
-	binder_dev = container_of(filp->private_data, struct binder_device,
-				  miscdev);
+	if (is_binderfs_device(nodp)) {
+		binder_dev = nodp->i_private;
+		kref_get(&binder_dev->ref);
+	} else {
+		binder_dev = container_of(filp->private_data, struct binder_device,
+					  miscdev);
+	}
 	proc->context = &binder_dev->context;
 	binder_alloc_init(&proc->alloc);
 
@@ -6009,10 +6015,11 @@ static void print_binder_transaction_log_entry(struct seq_file *m,
 	 */
 	smp_rmb();
 	seq_printf(m,
-		   "%d: %s from %d:%d to %d:%d context %s node %d handle %d size %d:%d ret %d/%d l=%d",
+		   "%d: %s from %d:%d to %d:%d context %.*s node %d handle %d size %d:%d ret %d/%d l=%d",
 		   e->debug_id, (e->call_type == 2) ? "reply" :
 		   ((e->call_type == 1) ? "async" : "call "), e->from_proc,
-		   e->from_thread, e->to_proc, e->to_thread, e->context_name,
+		   e->from_thread, e->to_proc, e->to_thread,
+		   (int)sizeof(e->context_name), e->context_name,
 		   e->to_node, e->target_handle, e->data_size, e->offsets_size,
 		   e->return_error, e->return_error_param,
 		   e->return_error_line);
@@ -6046,7 +6053,7 @@ static int binder_transaction_log_show(struct seq_file *m, void *unused)
 	return 0;
 }
 
-static const struct file_operations binder_fops = {
+const struct file_operations binder_fops = {
 	.owner = THIS_MODULE,
 	.poll = binder_poll,
 	.unlocked_ioctl = binder_ioctl,
@@ -6057,10 +6064,10 @@ static const struct file_operations binder_fops = {
 	.release = binder_release,
 };
 
-BINDER_DEBUG_ENTRY(state);
-BINDER_DEBUG_ENTRY(stats);
-BINDER_DEBUG_ENTRY(transactions);
-BINDER_DEBUG_ENTRY(transaction_log);
+BINDER_DEBUG_ENTRY(static, state);
+BINDER_DEBUG_ENTRY(, stats);
+BINDER_DEBUG_ENTRY(static, transactions);
+BINDER_DEBUG_ENTRY(static, transaction_log);
 
 static int __init init_binder_device(const char *name)
 {
@@ -6136,6 +6143,18 @@ static int __init binder_init(void)
 				    binder_debugfs_dir_entry_root,
 				    &binder_transaction_log_failed,
 				    &binder_transaction_log_fops);
+	}
+
+	/*
+	 * With binderfs Android creates /dev/binder and its siblings as
+	 * links to one mount. Registering separate misc devices would give
+	 * userspace two independent sets of Binder contexts.
+	 */
+	if (IS_ENABLED(CONFIG_ANDROID_BINDERFS)) {
+		ret = init_binderfs();
+		if (!ret)
+			return 0;
+		pr_err("binderfs registration failed (%d), using misc devices\n", ret);
 	}
 
 	/*
