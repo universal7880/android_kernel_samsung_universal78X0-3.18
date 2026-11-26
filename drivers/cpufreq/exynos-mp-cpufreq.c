@@ -661,6 +661,7 @@ static struct cpufreq_driver exynos_driver = {
 	.get		= exynos_getspeed,
 	.target		= exynos_target,
 	.init		= exynos_cpufreq_init,
+	.attr		= cpufreq_generic_attr,
 	.name		= "exynos_cpufreq",
 #ifdef CONFIG_PM
 	.suspend	= exynos_cpufreq_suspend,
