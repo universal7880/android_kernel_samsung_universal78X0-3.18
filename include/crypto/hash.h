@@ -126,6 +126,11 @@ static inline void crypto_free_ahash(struct crypto_ahash *tfm)
 	crypto_destroy_tfm(tfm, crypto_ahash_tfm(tfm));
 }
 
+static inline const char *crypto_ahash_driver_name(struct crypto_ahash *tfm)
+{
+	return crypto_tfm_alg_driver_name(crypto_ahash_tfm(tfm));
+}
+
 static inline unsigned int crypto_ahash_alignmask(
 	struct crypto_ahash *tfm)
 {

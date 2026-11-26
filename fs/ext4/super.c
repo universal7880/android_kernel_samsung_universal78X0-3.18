@@ -1053,6 +1053,7 @@ void ext4_clear_inode(struct inode *inode)
 {
 	invalidate_inode_buffers(inode);
 	clear_inode(inode);
+	fsverity_cleanup_inode(inode);
 	dquot_drop(inode);
 	ext4_discard_preallocations(inode);
 	ext4_es_remove_extent(inode, 0, EXT_MAX_BLOCKS);
@@ -3013,12 +3014,18 @@ EXT4_INFO_ATTR(lazy_itable_init);
 EXT4_INFO_ATTR(batched_discard);
 EXT4_INFO_ATTR(meta_bg_resize);
 EXT4_INFO_ATTR(encryption);
+#ifdef CONFIG_FS_VERITY
+EXT4_INFO_ATTR(verity);
+#endif
 
 static struct attribute *ext4_feat_attrs[] = {
 	ATTR_LIST(lazy_itable_init),
 	ATTR_LIST(batched_discard),
 	ATTR_LIST(meta_bg_resize),
 	ATTR_LIST(encryption),
+#ifdef CONFIG_FS_VERITY
+	ATTR_LIST(verity),
+#endif
 	NULL,
 };
 
@@ -4044,6 +4051,11 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 		goto failed_mount;
 
 	blocksize = BLOCK_SIZE << le32_to_cpu(es->s_log_block_size);
+	if (EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_VERITY) &&
+	    (!IS_ENABLED(CONFIG_FS_VERITY) || blocksize != PAGE_SIZE)) {
+		ext4_msg(sb, KERN_ERR, "Unsupported filesystem for fs-verity");
+		goto failed_mount;
+	}
 	if (blocksize < EXT4_MIN_BLOCK_SIZE ||
 	    blocksize > EXT4_MAX_BLOCK_SIZE) {
 		ext4_msg(sb, KERN_ERR,
@@ -4377,6 +4389,9 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	 * set up enough so that it can read an inode
 	 */
 	sb->s_op = &ext4_sops;
+#ifdef CONFIG_FS_VERITY
+	sb->s_vop = &ext4_verityops;
+#endif
 	sb->s_export_op = &ext4_export_ops;
 	sb->s_xattr = ext4_xattr_handlers;
 #ifdef CONFIG_EXT4_FS_ENCRYPTION

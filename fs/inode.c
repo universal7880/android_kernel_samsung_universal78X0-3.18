@@ -141,6 +141,9 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	i_uid_write(inode, 0);
 	i_gid_write(inode, 0);
 	atomic_set(&inode->i_writecount, 0);
+#ifdef CONFIG_FS_VERITY
+	inode->i_verity_info = NULL;
+#endif
 	inode->i_size = 0;
 	inode->i_blocks = 0;
 	inode->i_bytes = 0;

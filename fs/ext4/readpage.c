@@ -32,6 +32,7 @@
 #include <linux/mm.h>
 #include <linux/kdev_t.h>
 #include <linux/gfp.h>
+#include <linux/slab.h>
 #include <linux/bio.h>
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
@@ -47,13 +48,17 @@
 #include "ext4.h"
 #include <trace/events/android_fs.h>
 
-static inline bool ext4_bio_encrypted(struct bio *bio)
+struct ext4_read_ctx {
+	struct bio *bio;
+	struct work_struct decrypt_work;
+	struct work_struct verify_work;
+};
+
+static bool ext4_page_needs_verity(const struct inode *inode, pgoff_t index)
 {
-#ifdef CONFIG_EXT4_FS_ENCRYPTION
-	return unlikely(bio->bi_private != NULL);
-#else
-	return false;
-#endif
+	/* The Merkle tree is itself read through this mapping, past EOF. */
+	return fsverity_active(inode) &&
+	       index < DIV_ROUND_UP_ULL(i_size_read(inode), PAGE_SIZE);
 }
 
 static void
@@ -67,18 +72,79 @@ ext4_trace_read_completion(struct bio *bio, int err)
 					      bio->bi_iter.bi_size);
 }
 
-/*
- * I/O completion handler for multipage BIOs.
- *
- * The mpage code never puts partial pages into a BIO (except for end-of-file).
- * If a page does not map to a contiguous run of blocks then it simply falls
- * back to block_read_full_page().
- *
- * Why is this?  If a page's completion depends on a number of different BIOs
- * which can complete in any order (or at the same time) then determining the
- * status of that page is hard.  See end_buffer_async_read() for the details.
- * There is no point in duplicating all that complexity.
- */
+static void ext4_finish_verity_bio(struct bio *bio, int err)
+{
+	struct bio_vec *bv;
+	int i;
+
+	bio_for_each_segment_all(bv, bio, i) {
+		struct page *page = bv->bv_page;
+
+		if (err || PageError(page)) {
+			ClearPageUptodate(page);
+			SetPageError(page);
+		} else {
+			SetPageUptodate(page);
+		}
+		unlock_page(page);
+	}
+
+	kfree(bio->bi_private);
+	bio_put(bio);
+}
+
+static void ext4_verify_read_work(struct work_struct *work)
+{
+	struct ext4_read_ctx *ctx =
+		container_of(work, struct ext4_read_ctx, verify_work);
+
+	fsverity_verify_bio(ctx->bio);
+	ext4_finish_verity_bio(ctx->bio, 0);
+}
+
+static void ext4_decrypt_read_work(struct work_struct *work)
+{
+	struct ext4_read_ctx *ctx =
+		container_of(work, struct ext4_read_ctx, decrypt_work);
+
+	fscrypt_decrypt_bio(ctx->bio);
+	/*
+	 * Verify plaintext on a different workqueue. Verification can wait
+	 * for reads of Merkle tree blocks that also need decryption.
+	 */
+	fsverity_enqueue_verify_work(&ctx->verify_work);
+}
+
+static void ext4_verity_end_io(struct bio *bio, int err)
+{
+	struct ext4_read_ctx *ctx = bio->bi_private;
+
+	if (trace_android_fs_dataread_start_enabled())
+		ext4_trace_read_completion(bio, err);
+
+	if (err)
+		ext4_finish_verity_bio(bio, err);
+	else if (ext4_encrypted_inode(bio->bi_io_vec[0].bv_page->mapping->host))
+		fscrypt_enqueue_decrypt_work(&ctx->decrypt_work);
+	else
+		fsverity_enqueue_verify_work(&ctx->verify_work);
+}
+
+static int ext4_set_verity_read_ctx(struct bio *bio)
+{
+	struct ext4_read_ctx *ctx;
+
+	ctx = kmalloc(sizeof(*ctx), GFP_NOFS);
+	if (!ctx)
+		return -ENOMEM;
+
+	ctx->bio = bio;
+	INIT_WORK(&ctx->decrypt_work, ext4_decrypt_read_work);
+	INIT_WORK(&ctx->verify_work, ext4_verify_read_work);
+	bio->bi_private = ctx;
+	return 0;
+}
+
 static void mpage_end_io(struct bio *bio, int err)
 {
 	struct bio_vec *bv;
@@ -87,7 +153,7 @@ static void mpage_end_io(struct bio *bio, int err)
 	if (trace_android_fs_dataread_start_enabled())
 		ext4_trace_read_completion(bio, err);
 
-	if (ext4_bio_encrypted(bio)) {
+	if (bio->bi_private) {
 		struct fscrypt_ctx *ctx = bio->bi_private;
 
 		if (err) {
@@ -141,10 +207,12 @@ int ext4_mpage_readpages(struct address_space *mapping,
 			 unsigned nr_pages)
 {
 	struct bio *bio = NULL;
+	bool bio_verify = false;
 	unsigned page_idx;
 	sector_t last_block_in_bio = 0;
 
 	struct inode *inode = mapping->host;
+	bool decrypt = ext4_encrypted_inode(inode) && S_ISREG(inode->i_mode);
 	const unsigned blkbits = inode->i_blkbits;
 	const unsigned blocks_per_page = PAGE_CACHE_SIZE >> blkbits;
 	const unsigned blocksize = 1 << blkbits;
@@ -156,7 +224,11 @@ int ext4_mpage_readpages(struct address_space *mapping,
 	struct block_device *bdev = inode->i_sb->s_bdev;
 	int length;
 	unsigned relative_block = 0;
+	loff_t read_limit = i_size_read(inode);
 	struct ext4_map_blocks map;
+
+	if (IS_VERITY(inode) || ext4_verity_in_progress(inode))
+		read_limit = inode->i_sb->s_maxbytes;
 
 	map.m_pblk = 0;
 	map.m_lblk = 0;
@@ -164,6 +236,7 @@ int ext4_mpage_readpages(struct address_space *mapping,
 	map.m_flags = 0;
 
 	for (page_idx = 0; nr_pages; page_idx++, nr_pages--) {
+		bool verify;
 		int fully_mapped = 1;
 		unsigned first_hole = blocks_per_page;
 
@@ -176,12 +249,18 @@ int ext4_mpage_readpages(struct address_space *mapping,
 				goto next_page;
 		}
 
-		if (page_has_buffers(page))
+		verify = ext4_page_needs_verity(inode, page->index);
+		if (page_has_buffers(page) &&
+		    (!(IS_VERITY(inode) || ext4_verity_in_progress(inode)) ||
+		     !try_to_free_buffers(page)))
 			goto confused;
+
+		if (verify)
+			ClearPageError(page);
 
 		block_in_file = (sector_t)page->index << (PAGE_CACHE_SHIFT - blkbits);
 		last_block = block_in_file + nr_pages * blocks_per_page;
-		last_block_in_file = (i_size_read(inode) + blocksize - 1) >> blkbits;
+		last_block_in_file = (read_limit + blocksize - 1) >> blkbits;
 		if (last_block > last_block_in_file)
 			last_block = last_block_in_file;
 		page_block = 0;
@@ -220,13 +299,10 @@ int ext4_mpage_readpages(struct address_space *mapping,
 				map.m_len = last_block - block_in_file;
 
 				if (ext4_map_blocks(NULL, inode, &map, 0) < 0) {
-				set_error_page:
-					SetPageError(page);
-					zero_user_segment(page, 0,
-							  PAGE_CACHE_SIZE);
-					unlock_page(page);
-					goto next_page;
+					goto set_error_page;
 				}
+			} else {
+				map.m_flags = 0;
 			}
 			if ((map.m_flags & EXT4_MAP_MAPPED) == 0) {
 				fully_mapped = 0;
@@ -258,6 +334,14 @@ int ext4_mpage_readpages(struct address_space *mapping,
 			zero_user_segment(page, first_hole << blkbits,
 					  PAGE_CACHE_SIZE);
 			if (first_hole == 0) {
+				if (verify) {
+					if (bio) {
+						ext4_submit_bio_read(bio);
+						bio = NULL;
+					}
+					if (!fsverity_verify_page(page))
+						goto set_error_page;
+				}
 				SetPageUptodate(page);
 				unlock_page(page);
 				goto next_page;
@@ -265,7 +349,7 @@ int ext4_mpage_readpages(struct address_space *mapping,
 		} else if (fully_mapped) {
 			SetPageMappedToDisk(page);
 		}
-		if (fully_mapped && blocks_per_page == 1 &&
+		if (!verify && fully_mapped && blocks_per_page == 1 &&
 		    !PageUptodate(page) && cleancache_get_page(page) == 0) {
 			SetPageUptodate(page);
 			goto confused;
@@ -275,31 +359,36 @@ int ext4_mpage_readpages(struct address_space *mapping,
 		 * This page will go to BIO.  Do we need to send this
 		 * BIO off first?
 		 */
-		if (bio && (last_block_in_bio != blocks[0] - 1)) {
+		/* A verification worker must never wait on its own bio. */
+		if (bio && (last_block_in_bio != blocks[0] - 1 ||
+			    bio_verify != verify)) {
 		submit_and_realloc:
 			ext4_submit_bio_read(bio);
 			bio = NULL;
 		}
 		if (bio == NULL) {
-			struct fscrypt_ctx *ctx = NULL;
-
-			if (ext4_encrypted_inode(inode) &&
-			    S_ISREG(inode->i_mode)) {
-				ctx = fscrypt_get_ctx(inode, GFP_NOFS);
-				if (IS_ERR(ctx))
-					goto set_error_page;
-			}
-			bio = bio_alloc(GFP_KERNEL,
+			bio = bio_alloc(GFP_NOFS,
 				min_t(int, nr_pages, bio_get_nr_vecs(bdev)));
-			if (!bio) {
-				if (ctx)
-					fscrypt_release_ctx(ctx);
+			if (!bio)
 				goto set_error_page;
+			if (verify) {
+				if (ext4_set_verity_read_ctx(bio))
+					goto free_bio;
+				bio->bi_end_io = ext4_verity_end_io;
+			} else {
+				if (decrypt) {
+					struct fscrypt_ctx *ctx;
+
+					ctx = fscrypt_get_ctx(inode, GFP_NOFS);
+					if (IS_ERR(ctx))
+						goto free_bio;
+					bio->bi_private = ctx;
+				}
+				bio->bi_end_io = mpage_end_io;
 			}
+			bio_verify = verify;
 			bio->bi_bdev = bdev;
 			bio->bi_iter.bi_sector = blocks[0] << (blkbits - 9);
-			bio->bi_end_io = mpage_end_io;
-			bio->bi_private = ctx;
 		}
 
 		length = first_hole << blkbits;
@@ -314,15 +403,32 @@ int ext4_mpage_readpages(struct address_space *mapping,
 		} else
 			last_block_in_bio = blocks[blocks_per_page - 1];
 		goto next_page;
+	free_bio:
+		bio_put(bio);
+		bio = NULL;
+		goto set_error_page;
 	confused:
 		if (bio) {
 			ext4_submit_bio_read(bio);
 			bio = NULL;
 		}
+		/*
+		 * Verity uses one filesystem block per page. Don't pass
+		 * a verity page to the buffer-head path, which completes
+		 * reads without verification and stops at i_size.
+		 */
+		if (IS_VERITY(inode) || ext4_verity_in_progress(inode))
+			goto set_error_page;
 		if (!PageUptodate(page))
 			block_read_full_page(page, ext4_get_block);
 		else
 			unlock_page(page);
+		goto next_page;
+	set_error_page:
+		ClearPageUptodate(page);
+		SetPageError(page);
+		zero_user_segment(page, 0, PAGE_CACHE_SIZE);
+		unlock_page(page);
 	next_page:
 		if (pages)
 			page_cache_release(page);

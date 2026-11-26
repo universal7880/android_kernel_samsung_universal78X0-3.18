@@ -272,6 +272,9 @@ long ext4_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			if (!capable(CAP_SYS_RESOURCE))
 				goto flags_out;
 		}
+		if ((IS_VERITY(inode) || ext4_verity_in_progress(inode)) &&
+		    ((flags ^ oldflags) & (EXT4_EXTENTS_FL | EXT4_JOURNAL_DATA_FL)))
+			goto flags_out;
 		if ((flags ^ oldflags) & EXT4_EXTENTS_FL)
 			migrate = 1;
 
@@ -521,7 +524,10 @@ group_add_out:
 		 * inode format to prevent read.
 		 */
 		mutex_lock(&(inode->i_mutex));
-		err = ext4_ext_migrate(inode);
+		if (IS_VERITY(inode) || ext4_verity_in_progress(inode))
+			err = -EPERM;
+		else
+			err = ext4_ext_migrate(inode);
 		mutex_unlock(&(inode->i_mutex));
 		mnt_drop_write_file(filp);
 		return err;
@@ -704,6 +710,15 @@ resizefs_out:
 		return invalidate_mapping_pages(inode->i_mapping, 0, -1);
 	}
 
+	case FS_IOC_ENABLE_VERITY:
+		if (!EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_VERITY))
+			return -EOPNOTSUPP;
+		return fsverity_ioctl_enable(filp, (const void __user *)arg);
+	case FS_IOC_MEASURE_VERITY:
+		if (!EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_VERITY))
+			return -EOPNOTSUPP;
+		return fsverity_ioctl_measure(filp, (void __user *)arg);
+
 	default:
 		return -ENOTTY;
 	}
@@ -771,6 +786,8 @@ long ext4_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case EXT4_IOC_SET_ENCRYPTION_POLICY:
 	case EXT4_IOC_GET_ENCRYPTION_PWSALT:
 	case EXT4_IOC_GET_ENCRYPTION_POLICY:
+	case FS_IOC_ENABLE_VERITY:
+	case FS_IOC_MEASURE_VERITY:
 #ifdef CONFIG_EXT4_FS_ENCRYPTION
 	case FS_IOC_GET_ENCRYPTION_POLICY_EX:
 	case FS_IOC_ADD_ENCRYPTION_KEY:
