@@ -133,6 +133,7 @@ static __le32 ext4_superblock_csum(struct super_block *sb,
 	int offset = offsetof(struct ext4_super_block, s_checksum);
 	__u32 csum;
 
+	BUILD_BUG_ON(offsetof(struct ext4_super_block, s_checksum) != 0x3fc);
 	csum = ext4_chksum(sbi, ~0, (char *)es, offset);
 
 	return cpu_to_le32(csum);
