@@ -16,6 +16,7 @@
 #include <linux/syscalls.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
+#include <linux/mm.h>
 #include <linux/mmzone.h>
 #include <linux/anon_inodes.h>
 #include <linux/file.h>
@@ -258,7 +259,27 @@ static ssize_t bpf_dummy_write(struct file *filp, const char __user *buf,
 	return -EINVAL;
 }
 
+static int bpf_map_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	struct bpf_map *map = file->private_data;
+
+	if (!map->ops->map_mmap)
+		return -EOPNOTSUPP;
+	if (!(vma->vm_flags & VM_SHARED) || (vma->vm_flags & VM_EXEC))
+		return -EINVAL;
+	if ((vma->vm_flags & VM_WRITE) && (map->map_flags & BPF_F_RDONLY_PROG))
+		return -EACCES;
+
+	/* Keep mmap permissions consistent across subsequent mprotect calls. */
+	vma->vm_flags &= ~VM_MAYEXEC;
+	if (!(vma->vm_flags & VM_WRITE))
+		vma->vm_flags &= ~VM_MAYWRITE;
+
+	return map->ops->map_mmap(map, vma);
+}
+
 const struct file_operations bpf_map_fops = {
+	.mmap		= bpf_map_mmap,
 #ifdef CONFIG_PROC_FS
 	.show_fdinfo	= bpf_map_show_fdinfo,
 #endif

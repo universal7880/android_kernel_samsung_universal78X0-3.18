@@ -24,6 +24,7 @@ struct bpf_map_ops {
 	struct bpf_map *(*map_alloc)(union bpf_attr *attr);
 	void (*map_release)(struct bpf_map *map, struct file *map_file);
 	void (*map_free)(struct bpf_map *map);
+	int (*map_mmap)(struct bpf_map *map, struct vm_area_struct *vma);
 	int (*map_get_next_key)(struct bpf_map *map, void *key, void *next_key);
 
 	/* funcs callable from userspace and from eBPF programs */
