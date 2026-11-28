@@ -17,6 +17,7 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/mm.h>
+#include <linux/poll.h>
 #include <linux/mmzone.h>
 #include <linux/anon_inodes.h>
 #include <linux/file.h>
@@ -265,7 +266,7 @@ static int bpf_map_mmap(struct file *file, struct vm_area_struct *vma)
 
 	if (!map->ops->map_mmap)
 		return -EOPNOTSUPP;
-	if (!(vma->vm_flags & VM_SHARED) || (vma->vm_flags & VM_EXEC))
+	if (!(vma->vm_flags & VM_MAYSHARE) || (vma->vm_flags & VM_EXEC))
 		return -EINVAL;
 	if ((vma->vm_flags & VM_WRITE) && (map->map_flags & BPF_F_RDONLY_PROG))
 		return -EACCES;
@@ -278,7 +279,16 @@ static int bpf_map_mmap(struct file *file, struct vm_area_struct *vma)
 	return map->ops->map_mmap(map, vma);
 }
 
+static unsigned int bpf_map_poll(struct file *file, poll_table *wait)
+{
+	struct bpf_map *map = file->private_data;
+
+	return map->ops->map_poll ? map->ops->map_poll(map, file, wait) :
+		DEFAULT_POLLMASK;
+}
+
 const struct file_operations bpf_map_fops = {
+	.poll		= bpf_map_poll,
 	.mmap		= bpf_map_mmap,
 #ifdef CONFIG_PROC_FS
 	.show_fdinfo	= bpf_map_show_fdinfo,

@@ -26,6 +26,7 @@ struct bpf_reg_state {
 	union {
 		/* valid when type == PTR_TO_PACKET */
 		u16 range;
+		u32 mem_size; /* ring buffer reservation size */
 
 		/* valid when type == CONST_PTR_TO_MAP | PTR_TO_MAP_VALUE |
 		 *   PTR_TO_MAP_VALUE_OR_NULL
@@ -65,12 +66,15 @@ enum bpf_stack_slot_type {
 	STACK_MISC	  /* BPF program wrote some data into this slot */
 };
 
-#define BPF_REG_SIZE 8	/* size of eBPF register in bytes */
+#define BPF_REG_SIZE 8
+#define BPF_MAX_RINGBUF_REFS 32	/* size of eBPF register in bytes */
 
 /* state of the program:
  * type of all registers and stack info
  */
 struct bpf_verifier_state {
+	u32 ringbuf_refs[BPF_MAX_RINGBUF_REFS];
+	u32 ringbuf_ref_count;
 	struct bpf_reg_state regs[MAX_BPF_REG];
 	u8 stack_slot_type[MAX_BPF_STACK];
 	struct bpf_reg_state spilled_regs[MAX_BPF_STACK / BPF_REG_SIZE];

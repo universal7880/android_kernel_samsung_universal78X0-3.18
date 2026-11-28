@@ -178,6 +178,8 @@ static __printf(1, 2) void verbose(const char *fmt, ...)
 static const char * const reg_type_str[] = {
 	[NOT_INIT]		= "?",
 	[SCALAR_VALUE]		= "inv",
+	[PTR_TO_RINGBUF_MEM] = "ringbuf_mem",
+	[PTR_TO_RINGBUF_MEM_OR_NULL] = "ringbuf_mem_or_null",
 	[PTR_TO_CTX]		= "ctx",
 	[CONST_PTR_TO_MAP]	= "map_ptr",
 	[PTR_TO_MAP_VALUE]	= "map_value",
@@ -667,6 +669,8 @@ static int bpf_size_to_bytes(int bpf_size)
 static bool is_spillable_regtype(enum bpf_reg_type type)
 {
 	switch (type) {
+	case PTR_TO_RINGBUF_MEM:
+	case PTR_TO_RINGBUF_MEM_OR_NULL:
 	case PTR_TO_MAP_VALUE:
 	case PTR_TO_MAP_VALUE_OR_NULL:
 	case PTR_TO_STACK:
@@ -947,9 +951,65 @@ static int check_sock_access(int off, int size, enum bpf_access_type t,
 	return -EACCES;
 }
 
+static bool is_ringbuf_ptr(const struct bpf_reg_state *reg)
+{
+	return reg->type == PTR_TO_RINGBUF_MEM ||
+	       reg->type == PTR_TO_RINGBUF_MEM_OR_NULL;
+}
+
+static int forget_ringbuf_ref(struct bpf_verifier_state *state, u32 id)
+{
+	u32 i;
+
+	for (i = 0; i < state->ringbuf_ref_count; i++) {
+		if (state->ringbuf_refs[i] == id) {
+			state->ringbuf_ref_count--;
+			state->ringbuf_refs[i] = state->ringbuf_refs[state->ringbuf_ref_count];
+			return 0;
+		}
+	}
+
+	return -EACCES;
+}
+
+static int release_ringbuf_ref(struct bpf_verifier_state *state, u32 id)
+{
+	struct bpf_reg_state *reg;
+	int i;
+
+	if (forget_ringbuf_ref(state, id))
+		return -EACCES;
+
+	for (i = 0; i < MAX_BPF_REG; i++) {
+		reg = &state->regs[i];
+		if (is_ringbuf_ptr(reg) && reg->id == id)
+			__mark_reg_not_init(reg);
+	}
+	for (i = 0; i < MAX_BPF_STACK; i += BPF_REG_SIZE) {
+		reg = &state->spilled_regs[i / BPF_REG_SIZE];
+		if (state->stack_slot_type[i] == STACK_SPILL &&
+		    is_ringbuf_ptr(reg) && reg->id == id) {
+			__mark_reg_not_init(reg);
+			memset(&state->stack_slot_type[i], STACK_INVALID, BPF_REG_SIZE);
+		}
+	}
+
+	return 0;
+}
+
+static int check_ringbuf_mem_access(const struct bpf_reg_state *reg,
+				    s64 off, int size)
+{
+	if (off < 0 || size < 0 || (u64)off + size > reg->mem_size)
+		return -EACCES;
+	return 0;
+}
+
 static bool __is_pointer_value(bool allow_ptr_leaks,
 			       const struct bpf_reg_state *reg)
 {
+	if (is_ringbuf_ptr(reg))
+		return true;
 	if (allow_ptr_leaks)
 		return false;
 
@@ -1077,7 +1137,14 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 		return -EACCES;
 	off = effective_off;
 
-	if (reg->type == PTR_TO_MAP_VALUE) {
+	if (reg->type == PTR_TO_RINGBUF_MEM) {
+		if (t == BPF_WRITE && value_regno >= 0 &&
+		    state->regs[value_regno].type != SCALAR_VALUE)
+			return -EACCES;
+		err = check_ringbuf_mem_access(reg, off, size);
+		if (!err && t == BPF_READ && value_regno >= 0)
+			mark_reg_unknown(state->regs, value_regno);
+	} else if (reg->type == PTR_TO_MAP_VALUE) {
 		if (t == BPF_WRITE && value_regno >= 0 &&
 		    is_pointer_value(env, value_regno)) {
 			verbose("R%d leaks addr into map\n", value_regno);
@@ -1314,6 +1381,8 @@ static int check_helper_mem_access(struct bpf_verifier_env *env, int regno,
 		return check_packet_access(env, regno, reg->off, access_size);
 	case PTR_TO_MAP_VALUE:
 		return check_map_access(env, regno, reg->off, access_size);
+	case PTR_TO_RINGBUF_MEM:
+		return check_ringbuf_mem_access(reg, reg->off, access_size);
 	default: /* scalar_value|ptr_to_stack or invalid ptr */
 		return check_stack_boundary(env, regno, access_size,
 					    zero_size_allowed, meta);
@@ -1334,6 +1403,20 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 	if (type == NOT_INIT) {
 		verbose("R%d !read_ok\n", regno);
 		return -EACCES;
+	}
+
+	if (arg_type == ARG_PTR_TO_ALLOC_MEM) {
+		if (type != PTR_TO_RINGBUF_MEM || reg->off ||
+		    !tnum_equals_const(reg->var_off, 0))
+			return -EACCES;
+		return 0;
+	}
+
+	if (arg_type == ARG_CONST_ALLOC_SIZE_OR_ZERO) {
+		if (type != SCALAR_VALUE || !tnum_is_const(reg->var_off) ||
+		    reg->var_off.value > INT_MAX)
+			return -EACCES;
+		return 0;
 	}
 
 	if (arg_type == ARG_ANYTHING) {
@@ -1391,7 +1474,7 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 		if (register_is_null(*reg))
 			/* final test in check_stack_boundary() */;
 		else if (type != PTR_TO_PACKET && type != PTR_TO_MAP_VALUE &&
-			 type != expected_type)
+			 type != PTR_TO_RINGBUF_MEM && type != expected_type)
 			goto err_type;
 		meta->raw_mode = arg_type == ARG_PTR_TO_UNINIT_MEM;
 	} else {
@@ -1516,6 +1599,12 @@ static int check_map_func_compatibility(struct bpf_map *map, int func_id)
 		if (func_id != BPF_FUNC_get_stackid)
 			goto error;
 		break;
+	case BPF_MAP_TYPE_RINGBUF:
+		if (func_id != BPF_FUNC_ringbuf_output &&
+		    func_id != BPF_FUNC_ringbuf_reserve &&
+		    func_id != BPF_FUNC_ringbuf_query)
+			goto error;
+		break;
 	case BPF_MAP_TYPE_SK_STORAGE:
 		if (func_id != BPF_FUNC_sk_storage_get &&
 		    func_id != BPF_FUNC_sk_storage_delete)
@@ -1539,6 +1628,12 @@ static int check_map_func_compatibility(struct bpf_map *map, int func_id)
 
 	/* ... and second from the function itself. */
 	switch (func_id) {
+	case BPF_FUNC_ringbuf_output:
+	case BPF_FUNC_ringbuf_reserve:
+	case BPF_FUNC_ringbuf_query:
+		if (map->map_type != BPF_MAP_TYPE_RINGBUF)
+			goto error;
+		break;
 	case BPF_FUNC_sk_storage_get:
 	case BPF_FUNC_sk_storage_delete:
 		if (map->map_type != BPF_MAP_TYPE_SK_STORAGE)
@@ -1623,6 +1718,7 @@ static int check_call(struct bpf_verifier_env *env, int func_id, int insn_idx)
 	struct bpf_reg_state *reg;
 	struct bpf_call_arg_meta meta;
 	bool changes_data;
+	u32 ringbuf_size = 0;
 	int i, err;
 
 	/* find function prototype */
@@ -1692,6 +1788,17 @@ static int check_call(struct bpf_verifier_env *env, int func_id, int insn_idx)
 			return err;
 	}
 
+	if (func_id == BPF_FUNC_ringbuf_reserve)
+		ringbuf_size = regs[BPF_REG_2].var_off.value;
+	if (func_id == BPF_FUNC_ringbuf_submit ||
+	    func_id == BPF_FUNC_ringbuf_discard) {
+		err = release_ringbuf_ref(state, regs[BPF_REG_1].id);
+		if (err)
+			return err;
+	}
+	if (func_id == BPF_FUNC_tail_call && state->ringbuf_ref_count)
+		return -EACCES;
+
 	/* reset caller saved regs */
 	for (i = 0; i < CALLER_SAVED_REGS; i++) {
 		reg = regs + caller_saved[i];
@@ -1719,6 +1826,16 @@ static int check_call(struct bpf_verifier_env *env, int func_id, int insn_idx)
 		}
 		regs[BPF_REG_0].map_ptr = meta.map_ptr;
 		regs[BPF_REG_0].id = ++env->id_gen;
+	} else if (fn->ret_type == RET_PTR_TO_ALLOC_MEM_OR_NULL) {
+		if (state->ringbuf_ref_count == BPF_MAX_RINGBUF_REFS)
+			return -E2BIG;
+		reg = &regs[BPF_REG_0];
+		__mark_reg_known_zero(reg);
+		reg->type = PTR_TO_RINGBUF_MEM_OR_NULL;
+		reg->off = 0;
+		reg->mem_size = ringbuf_size;
+		reg->id = ++env->id_gen;
+		state->ringbuf_refs[state->ringbuf_ref_count++] = reg->id;
 	} else if (fn->ret_type == RET_PTR_TO_SOCKET_OR_NULL) {
 		mark_reg_unknown(regs, BPF_REG_0);
 		mark_reg_known_zero(regs, BPF_REG_0);
@@ -2217,6 +2334,31 @@ static int adjust_scalar_min_max_vals(struct bpf_verifier_env *env,
 /* Handles ALU ops other than BPF_END, BPF_NEG and BPF_MOV: computes new min/max
  * and var_off.
  */
+static int adjust_ringbuf_ptr(struct bpf_reg_state *reg,
+			      const struct bpf_insn *insn,
+			      const struct bpf_reg_state *src)
+{
+	s64 delta = insn->imm;
+	s64 offset;
+
+	if (reg->type != PTR_TO_RINGBUF_MEM ||
+	    BPF_CLASS(insn->code) != BPF_ALU64 ||
+	    (BPF_OP(insn->code) != BPF_ADD && BPF_OP(insn->code) != BPF_SUB))
+		return -EACCES;
+	if (src) {
+		if (src->type != SCALAR_VALUE || !tnum_is_const(src->var_off))
+			return -EACCES;
+		delta = (s64)src->var_off.value;
+	}
+	if (delta < -(s64)reg->mem_size || delta > reg->mem_size)
+		return -EACCES;
+	offset = reg->off + (BPF_OP(insn->code) == BPF_SUB ? -delta : delta);
+	if (offset < 0 || offset > reg->mem_size)
+		return -EACCES;
+	reg->off = offset;
+	return 0;
+}
+
 static int adjust_reg_min_max_vals(struct bpf_verifier_env *env,
 				   struct bpf_insn *insn)
 {
@@ -2226,7 +2368,11 @@ static int adjust_reg_min_max_vals(struct bpf_verifier_env *env,
 	int rc;
 
 	dst_reg = &regs[insn->dst_reg];
-	src_reg = NULL;
+	src_reg = BPF_SRC(insn->code) == BPF_X ? &regs[insn->src_reg] : NULL;
+	if (is_ringbuf_ptr(dst_reg))
+		return adjust_ringbuf_ptr(dst_reg, insn, src_reg);
+	if (src_reg && is_ringbuf_ptr(src_reg))
+		return -EACCES;
 	if (dst_reg->type != SCALAR_VALUE)
 		ptr_reg = dst_reg;
 	if (BPF_SRC(insn->code) == BPF_X) {
@@ -2943,6 +3089,17 @@ static void mark_ptr_or_null_reg(struct bpf_reg_state *regs, u32 regno, u32 id,
 {
 	struct bpf_reg_state *reg = &regs[regno];
 
+	if (reg->type == PTR_TO_RINGBUF_MEM_OR_NULL && reg->id == id) {
+		if (is_null) {
+			reg->type = SCALAR_VALUE;
+			reg->id = 0;
+			reg->mem_size = 0;
+		} else {
+			reg->type = PTR_TO_RINGBUF_MEM;
+		}
+		return;
+	}
+
 	if ((reg->type == PTR_TO_MAP_VALUE_OR_NULL ||
 	     reg->type == PTR_TO_SOCKET_OR_NULL ||
 	     reg->type == PTR_TO_SOCK_COMMON_OR_NULL) && reg->id == id) {
@@ -2985,6 +3142,9 @@ static void mark_ptr_or_null_regs(struct bpf_verifier_state *state, u32 regno,
 	struct bpf_reg_state *regs = state->regs;
 	u32 id = regs[regno].id;
 	int i;
+
+	if (is_null && regs[regno].type == PTR_TO_RINGBUF_MEM_OR_NULL)
+		forget_ringbuf_ref(state, id);
 
 	for (i = 0; i < MAX_BPF_REG; i++)
 		mark_ptr_or_null_reg(regs, i, id, is_null);
@@ -3123,7 +3283,8 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 	/* Refine nullable pointers after an explicit R == 0 check. */
 	if (!is_jmp32 && BPF_SRC(insn->code) == BPF_K &&
 	    insn->imm == 0 && (opcode == BPF_JEQ || opcode == BPF_JNE) &&
-	    (dst_reg->type == PTR_TO_MAP_VALUE_OR_NULL ||
+	    (dst_reg->type == PTR_TO_RINGBUF_MEM_OR_NULL ||
+	     dst_reg->type == PTR_TO_MAP_VALUE_OR_NULL ||
 	     dst_reg->type == PTR_TO_SOCKET_OR_NULL ||
 	     dst_reg->type == PTR_TO_SOCK_COMMON_OR_NULL)) {
 		/* Mark all pointer aliases in each branch as either
@@ -3665,6 +3826,12 @@ static bool states_equal(struct bpf_verifier_env *env,
 	bool ret = false;
 	int i;
 
+	/* A previously verified path must own the same live reservations. */
+	if (old->ringbuf_ref_count != cur->ringbuf_ref_count ||
+	    memcmp(old->ringbuf_refs, cur->ringbuf_refs,
+		   cur->ringbuf_ref_count * sizeof(cur->ringbuf_refs[0])))
+		return false;
+
 	idmap = kcalloc(ID_MAP_SIZE, sizeof(struct idpair), GFP_KERNEL);
 	/* If we failed to allocate the idmap, just say it's not safe */
 	if (!idmap)
@@ -4065,6 +4232,10 @@ static int do_check(struct bpf_verifier_env *env)
 					return err;
 
 process_bpf_exit:
+				if (env->cur_state.ringbuf_ref_count) {
+					verbose("unreleased ring buffer reservation\n");
+					return -EACCES;
+				}
 				insn_idx = pop_stack(env, &prev_insn_idx);
 				if (insn_idx < 0) {
 					break;
@@ -4081,6 +4252,8 @@ process_bpf_exit:
 			u8 mode = BPF_MODE(insn->code);
 
 			if (mode == BPF_ABS || mode == BPF_IND) {
+				if (env->cur_state.ringbuf_ref_count)
+					return -EACCES;
 				err = check_ld_abs(env, insn);
 				if (err)
 					return err;

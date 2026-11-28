@@ -1663,6 +1663,7 @@ config EVENTFD
 config BPF_SYSCALL
 	bool "Enable bpf() system call" if EXPERT
 	select ANON_INODES
+	select IRQ_WORK
 	select BPF
 	default n
 	help
