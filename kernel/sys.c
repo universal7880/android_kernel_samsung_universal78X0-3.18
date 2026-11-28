@@ -1257,7 +1257,7 @@ static void adjust_network_bpf_release(struct new_utsname *name)
 
 	path = d_path(&exe->f_path, pathbuf, sizeof(pathbuf));
 	if (!IS_ERR(path) && (!strcmp(path, loader) || !strcmp(path, netd)))
-		strlcpy(name->release, "4.19.236", sizeof(name->release));
+		strlcpy(name->release, "5.10.210", sizeof(name->release));
 
 	fput(exe);
 }
