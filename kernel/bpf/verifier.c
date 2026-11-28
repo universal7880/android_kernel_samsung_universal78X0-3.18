@@ -1510,6 +1510,9 @@ static int check_map_func_compatibility(struct bpf_map *map, int func_id)
 		if (func_id != BPF_FUNC_get_stackid)
 			goto error;
 		break;
+	case BPF_MAP_TYPE_DEVMAP_HASH:
+		/* No BPF redirect-map datapath on this kernel. */
+		goto error;
 	case BPF_MAP_TYPE_CGROUP_ARRAY:
 		if (func_id != BPF_FUNC_skb_under_cgroup)
 			goto error;

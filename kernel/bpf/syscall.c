@@ -333,6 +333,8 @@ static int bpf_map_set_btf(struct bpf_map *map, const union bpf_attr *attr)
 
 	if (!key_id && !value_id)
 		return attr->btf_fd ? -EINVAL : 0;
+	if (map->map_type == BPF_MAP_TYPE_DEVMAP_HASH)
+		return -EOPNOTSUPP;
 	if (!key_id || !value_id)
 		return -EINVAL;
 
@@ -387,6 +389,8 @@ static int map_create(union bpf_attr *attr)
 		return PTR_ERR(map);
 
 	map->map_flags = attr->map_flags;
+	if (map->map_type == BPF_MAP_TYPE_DEVMAP_HASH)
+		map->map_flags |= BPF_F_RDONLY_PROG;
 	map->btf = NULL;
 	err = bpf_obj_name_cpy(map->name, attr->map_name);
 	if (err)

@@ -115,6 +115,7 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_ARRAY_OF_MAPS,
 	BPF_MAP_TYPE_HASH_OF_MAPS,
 	BPF_MAP_TYPE_DEVMAP = 14, /* Reserved; not implemented. */
+	BPF_MAP_TYPE_DEVMAP_HASH = 25,
 };
 
 enum bpf_prog_type {
@@ -218,6 +219,7 @@ enum bpf_attach_type {
 /* Flags for accessing BPF object */
 #define BPF_F_RDONLY		(1U << 3)
 #define BPF_F_WRONLY		(1U << 4)
+#define BPF_F_RDONLY_PROG	(1U << 7)
 
 /* flags for BPF_PROG_QUERY */
 #define BPF_F_QUERY_EFFECTIVE	(1U << 0)
