@@ -2567,10 +2567,23 @@ sk_filter_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 	}
 }
 
+BPF_CALL_1(bpf_get_socket_cookie_sock, struct sock *, sk)
+{
+	return sock_gen_cookie(sk);
+}
+
+static const struct bpf_func_proto bpf_get_socket_cookie_sock_proto = {
+	.func		= bpf_get_socket_cookie_sock,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_CTX,
+};
+
 static const struct bpf_func_proto *
 sock_filter_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
 	switch (func_id) {
+	case BPF_FUNC_get_socket_cookie:
+		return &bpf_get_socket_cookie_sock_proto;
 	/* inet and inet6 sockets are created in a process
 	 * context so there is always a valid uid/gid
 	 */
@@ -2783,6 +2796,8 @@ static bool sock_filter_is_valid_access(int off, int size,
 		return false;
 
 	if (type == BPF_WRITE) {
+		if (prog->expected_attach_type != BPF_CGROUP_INET_SOCK_CREATE)
+			return false;
 		switch (off) {
 		case offsetof(struct bpf_sock, bound_dev_if):
 			break;

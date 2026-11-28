@@ -1338,6 +1338,8 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 	/* Now protected by module ref count */
 	rcu_read_unlock();
 
+	if (kern)
+		set_bit(SOCK_KERNEL, &sock->flags);
 	err = pf->create(net, sock, protocol, kern);
 	if (err < 0)
 		goto out_module_put;
@@ -3412,6 +3414,8 @@ int kernel_accept(struct socket *sock, struct socket **newsock, int flags)
 	if (err < 0)
 		goto done;
 
+	if (test_bit(SOCK_KERNEL, &sock->flags))
+		set_bit(SOCK_KERNEL, &(*newsock)->flags);
 	err = sock->ops->accept(sock, *newsock, flags);
 	if (err < 0) {
 		sock_release(*newsock);

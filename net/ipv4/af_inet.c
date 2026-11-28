@@ -431,6 +431,9 @@ int inet_release(struct socket *sock)
 #ifdef CONFIG_NETFILTER_XT_MATCH_QTAGUID
 		qtaguid_untag(sock, true);
 #endif
+		if (!test_bit(SOCK_KERNEL, &sock->flags))
+			bpf_cgroup_run_inet_sock_release(sk);
+
 		sock_rps_reset_flow(sk);
 
 		/* Applications forget to leave groups before exiting */
