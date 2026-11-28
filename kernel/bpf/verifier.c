@@ -1349,6 +1349,12 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 		return -EACCES;
 	}
 
+	if (arg_type == ARG_PTR_TO_MAP_VALUE_OR_NULL) {
+		if (register_is_null(*reg))
+			return 0;
+		arg_type = ARG_PTR_TO_MAP_VALUE;
+	}
+
 	if (arg_type == ARG_PTR_TO_MAP_KEY ||
 	    arg_type == ARG_PTR_TO_MAP_VALUE) {
 		expected_type = PTR_TO_STACK;
@@ -1510,6 +1516,11 @@ static int check_map_func_compatibility(struct bpf_map *map, int func_id)
 		if (func_id != BPF_FUNC_get_stackid)
 			goto error;
 		break;
+	case BPF_MAP_TYPE_SK_STORAGE:
+		if (func_id != BPF_FUNC_sk_storage_get &&
+		    func_id != BPF_FUNC_sk_storage_delete)
+			goto error;
+		break;
 	case BPF_MAP_TYPE_DEVMAP_HASH:
 		/* No BPF redirect-map datapath on this kernel. */
 		goto error;
@@ -1528,6 +1539,11 @@ static int check_map_func_compatibility(struct bpf_map *map, int func_id)
 
 	/* ... and second from the function itself. */
 	switch (func_id) {
+	case BPF_FUNC_sk_storage_get:
+	case BPF_FUNC_sk_storage_delete:
+		if (map->map_type != BPF_MAP_TYPE_SK_STORAGE)
+			goto error;
+		break;
 	case BPF_FUNC_tail_call:
 		if (map->map_type != BPF_MAP_TYPE_PROG_ARRAY)
 			goto error;

@@ -115,6 +115,7 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_ARRAY_OF_MAPS,
 	BPF_MAP_TYPE_HASH_OF_MAPS,
 	BPF_MAP_TYPE_DEVMAP = 14, /* Reserved; not implemented. */
+	BPF_MAP_TYPE_SK_STORAGE = 24,
 	BPF_MAP_TYPE_DEVMAP_HASH = 25,
 };
 
@@ -596,10 +597,15 @@ enum bpf_func_id {
 	BPF_FUNC_bind = 64,
 	BPF_FUNC_skb_load_bytes_relative = 68,
 	BPF_FUNC_sk_fullsock = 95,
+	BPF_FUNC_sk_storage_get = 107,
+	BPF_FUNC_sk_storage_delete = 108,
 	BPF_FUNC_ktime_get_boot_ns = 125,
 
 	__BPF_FUNC_MAX_ID,
 };
+
+/* Create zeroed socket storage when an entry is missing. */
+#define BPF_SK_STORAGE_GET_F_CREATE (1ULL << 0)
 
 /* All flags used by eBPF helper functions, placed here. */
 

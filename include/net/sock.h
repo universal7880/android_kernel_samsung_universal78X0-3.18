@@ -380,6 +380,9 @@ struct sock {
 	int			sk_rcvbuf;
 
 	struct sk_filter __rcu	*sk_filter;
+#ifdef CONFIG_CGROUP_BPF
+	struct bpf_sk_storage __rcu *sk_bpf_storage;
+#endif
 	struct socket_wq __rcu	*sk_wq;
 
 #ifdef CONFIG_XFRM

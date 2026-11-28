@@ -369,6 +369,12 @@ static int bpf_map_set_btf(struct bpf_map *map, const union bpf_attr *attr)
 	    !value || value_size != map->value_size)
 		goto out;
 
+	if (map->map_type == BPF_MAP_TYPE_SK_STORAGE &&
+	    (BTF_INFO_KIND(key->info) != BTF_KIND_INT ||
+	     BTF_INT_BITS(*(const u32 *)(key + 1)) != 32 ||
+	     BTF_INT_OFFSET(*(const u32 *)(key + 1))))
+		goto out;
+
 	/* This tree has no BPF spin lock map-value ABI. */
 	if (BTF_INFO_KIND(value->info) == BTF_KIND_STRUCT &&
 	    btf_find_spin_lock(btf, value) != -ENOENT) {
@@ -598,10 +604,10 @@ static int map_lookup_elem(union bpf_attr *attr)
 	} else {
 		rcu_read_lock();
 		ptr = map->ops->map_lookup_elem(map, key);
-		if (ptr)
+		if (!IS_ERR_OR_NULL(ptr))
 			memcpy(value, ptr, value_size);
 		rcu_read_unlock();
-		err = ptr ? 0 : -ENOENT;
+		err = ptr ? PTR_ERR_OR_ZERO(ptr) : -ENOENT;
 	}
 
 	if (err)
