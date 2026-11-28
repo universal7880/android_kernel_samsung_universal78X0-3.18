@@ -10,6 +10,8 @@
  * General Public License for more details.
  */
 #include <linux/bpf.h>
+#include <linux/btf.h>
+#include <uapi/linux/btf.h>
 #include "map_in_map.h"
 #include <linux/syscalls.h>
 #include <linux/slab.h>
@@ -171,6 +173,7 @@ static void bpf_map_free_deferred(struct work_struct *work)
 
 	bpf_map_uncharge_memlock(map);
 	security_bpf_map_free(map);
+	btf_put(map->btf);
 	/* implementation dependent freeing */
 	map->ops->map_free(map);
 }
@@ -319,7 +322,47 @@ static int bpf_obj_name_cpy(char *dst, const char *src)
 	return 0;
 }
 
-#define BPF_MAP_CREATE_LAST_FIELD map_name
+static int bpf_map_set_btf(struct bpf_map *map, const union bpf_attr *attr)
+{
+	const struct btf_type *key, *value;
+	u32 key_id = attr->btf_key_type_id;
+	u32 value_id = attr->btf_value_type_id;
+	u32 key_size, value_size;
+	struct btf *btf;
+	int ret = -EINVAL;
+
+	if (!key_id && !value_id)
+		return attr->btf_fd ? -EINVAL : 0;
+	if (!key_id || !value_id)
+		return -EINVAL;
+
+	btf = btf_get_by_fd(attr->btf_fd);
+	if (IS_ERR(btf))
+		return PTR_ERR(btf);
+
+	key = btf_type_id_size(btf, &key_id, &key_size);
+	value = btf_type_id_size(btf, &value_id, &value_size);
+	if (!key || key_size != map->key_size ||
+	    !value || value_size != map->value_size)
+		goto out;
+
+	/* This tree has no BPF spin lock map-value ABI. */
+	if (BTF_INFO_KIND(value->info) == BTF_KIND_STRUCT &&
+	    btf_find_spin_lock(btf, value) != -ENOENT) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+
+	map->btf = btf;
+	map->btf_key_type_id = attr->btf_key_type_id;
+	map->btf_value_type_id = attr->btf_value_type_id;
+	return 0;
+out:
+	btf_put(btf);
+	return ret;
+}
+
+#define BPF_MAP_CREATE_LAST_FIELD btf_value_type_id
 /* called via syscall */
 static int map_create(union bpf_attr *attr)
 {
@@ -327,7 +370,7 @@ static int map_create(union bpf_attr *attr)
 	int f_flags;
 	int err;
 
-	err = CHECK_ATTR(BPF_MAP_CREATE) || attr->numa_node ||
+	err = CHECK_ATTR(BPF_MAP_CREATE) || attr->numa_node || attr->map_ifindex ||
 	      (attr->inner_map_fd &&
 	       attr->map_type != BPF_MAP_TYPE_ARRAY_OF_MAPS &&
 	       attr->map_type != BPF_MAP_TYPE_HASH_OF_MAPS);
@@ -344,6 +387,7 @@ static int map_create(union bpf_attr *attr)
 		return PTR_ERR(map);
 
 	map->map_flags = attr->map_flags;
+	map->btf = NULL;
 	err = bpf_obj_name_cpy(map->name, attr->map_name);
 	if (err)
 		goto free_map_nouncharge;
@@ -358,6 +402,10 @@ static int map_create(union bpf_attr *attr)
 	err = bpf_map_charge_memlock(map);
 	if (err)
 		goto free_map_sec;
+
+	err = bpf_map_set_btf(map, attr);
+	if (err)
+		goto free_map;
 
 	err = bpf_map_alloc_id(map);
 	if (err)
@@ -378,6 +426,7 @@ static int map_create(union bpf_attr *attr)
 	return err;
 
 free_map:
+	btf_put(map->btf);
 	bpf_map_uncharge_memlock(map);
 free_map_sec:
 	security_bpf_map_free(map);
@@ -1397,6 +1446,11 @@ static int bpf_map_get_info_by_fd(struct bpf_map *map,
 	info.value_size = map->value_size;
 	info.max_entries = map->max_entries;
 	info.map_flags = map->map_flags;
+	if (map->btf) {
+		info.btf_id = btf_id(map->btf);
+		info.btf_key_type_id = map->btf_key_type_id;
+		info.btf_value_type_id = map->btf_value_type_id;
+	}
 	memcpy(info.name, map->name, sizeof(map->name));
 
 	if (copy_to_user(uinfo, &info, info_len) ||
@@ -1428,6 +1482,8 @@ static int bpf_obj_get_info_by_fd(const union bpf_attr *attr,
 	else if (f.file->f_op == &bpf_map_fops)
 		err = bpf_map_get_info_by_fd(f.file->private_data, attr,
 					     uattr);
+	else if (f.file->f_op == &btf_fops)
+		err = btf_get_info_by_fd(f.file->private_data, attr, uattr);
 	else
 		err = -EINVAL;
 
@@ -1655,6 +1711,26 @@ static int bpf_prog_query(const union bpf_attr *attr,
 }
 #endif /* CONFIG_CGROUP_BPF */
 
+#define BPF_BTF_LOAD_LAST_FIELD btf_log_level
+static int bpf_btf_load(const union bpf_attr *attr)
+{
+	if (CHECK_ATTR(BPF_BTF_LOAD))
+		return -EINVAL;
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	return btf_new_fd(attr);
+}
+
+#define BPF_BTF_GET_FD_BY_ID_LAST_FIELD btf_id
+static int bpf_btf_get_fd_by_id(const union bpf_attr *attr)
+{
+	if (CHECK_ATTR(BPF_BTF_GET_FD_BY_ID))
+		return -EINVAL;
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	return btf_get_fd_by_id(attr->btf_id);
+}
+
 SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, size)
 {
 	union bpf_attr attr;
@@ -1691,6 +1767,12 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 		return err;
 
 	switch (cmd) {
+	case BPF_BTF_LOAD:
+		err = bpf_btf_load(&attr);
+		break;
+	case BPF_BTF_GET_FD_BY_ID:
+		err = bpf_btf_get_fd_by_id(&attr);
+		break;
 	case BPF_MAP_CREATE:
 		err = map_create(&attr);
 		break;
