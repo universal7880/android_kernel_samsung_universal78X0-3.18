@@ -1399,6 +1399,16 @@ out_nomem:
 
 static int shmem_mmap(struct file *file, struct vm_area_struct *vma)
 {
+	struct shmem_inode_info *info = SHMEM_I(file_inode(file));
+
+	if ((vma->vm_flags & VM_SHARED) &&
+	    (READ_ONCE(info->seals) & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE))) {
+		if (vma->vm_flags & VM_WRITE)
+			return -EPERM;
+		/* mprotect must not upgrade a new read-only mapping. */
+		vma->vm_flags &= ~VM_MAYWRITE;
+	}
+
 	file_accessed(file);
 	vma->vm_ops = &shmem_vm_ops;
 	return 0;
@@ -1491,7 +1501,7 @@ shmem_write_begin(struct file *file, struct address_space *mapping,
 
 	/* i_mutex is held by caller */
 	if (unlikely(info->seals)) {
-		if (info->seals & F_SEAL_WRITE)
+		if (info->seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE))
 			return -EPERM;
 		if ((info->seals & F_SEAL_GROW) && pos + len > inode->i_size)
 			return -EPERM;
@@ -1950,7 +1960,8 @@ continue_resched:
 #define F_ALL_SEALS (F_SEAL_SEAL | \
 		     F_SEAL_SHRINK | \
 		     F_SEAL_GROW | \
-		     F_SEAL_WRITE)
+		     F_SEAL_WRITE | \
+		     F_SEAL_FUTURE_WRITE)
 
 int shmem_add_seals(struct file *file, unsigned int seals)
 {
@@ -1974,6 +1985,7 @@ int shmem_add_seals(struct file *file, unsigned int seals)
 	 *   SEAL_SHRINK: Prevent the file from shrinking
 	 *   SEAL_GROW: Prevent the file from growing
 	 *   SEAL_WRITE: Prevent write access to the file
+	 *   SEAL_FUTURE_WRITE: Prevent writes and new writable shared mappings
 	 *
 	 * As we don't require any trust relationship between two parties, we
 	 * must prevent seals from being removed. Therefore, sealing a file
@@ -2014,7 +2026,7 @@ int shmem_add_seals(struct file *file, unsigned int seals)
 		}
 	}
 
-	info->seals |= seals;
+	WRITE_ONCE(info->seals, info->seals | seals);
 	error = 0;
 
 unlock:
@@ -2077,7 +2089,7 @@ static long shmem_fallocate(struct file *file, int mode, loff_t offset,
 		DECLARE_WAIT_QUEUE_HEAD_ONSTACK(shmem_falloc_waitq);
 
 		/* protected by i_mutex */
-		if (info->seals & F_SEAL_WRITE) {
+		if (info->seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE)) {
 			error = -EPERM;
 			goto out;
 		}
