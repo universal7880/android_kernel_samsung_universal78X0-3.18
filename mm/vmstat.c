@@ -1205,21 +1205,25 @@ enum writeback_stat_item {
 	NR_VM_WRITEBACK_STAT_ITEMS,
 };
 
+/* Keep the existing per-zone names and expose the total used by lmkd. */
+static size_t vmstat_proc_count(void)
+{
+	return ARRAY_SIZE(vmstat_text) + IS_ENABLED(CONFIG_VM_EVENT_COUNTERS);
+}
+
 static void *vmstat_start(struct seq_file *m, loff_t *pos)
 {
-	unsigned long *v;
-	int i, stat_items_size;
-
-	if (*pos >= ARRAY_SIZE(vmstat_text))
-		return NULL;
-	stat_items_size = NR_VM_ZONE_STAT_ITEMS * sizeof(unsigned long) +
-			  NR_VM_WRITEBACK_STAT_ITEMS * sizeof(unsigned long);
-
 #ifdef CONFIG_VM_EVENT_COUNTERS
-	stat_items_size += sizeof(struct vm_event_state);
+	static const enum vm_event_item pgscan_direct_events[] = {
+		FOR_ALL_ZONES(PGSCAN_DIRECT)
+	};
 #endif
+	unsigned long *v;
+	int i;
 
-	v = kmalloc(stat_items_size, GFP_KERNEL);
+	if (*pos >= vmstat_proc_count())
+		return NULL;
+	v = kmalloc_array(vmstat_proc_count(), sizeof(*v), GFP_KERNEL);
 	m->private = v;
 	if (!v)
 		return ERR_PTR(-ENOMEM);
@@ -1235,6 +1239,9 @@ static void *vmstat_start(struct seq_file *m, loff_t *pos)
 	all_vm_events(v);
 	v[PGPGIN] /= 2;		/* sectors -> kbytes */
 	v[PGPGOUT] /= 2;
+	v[NR_VM_EVENT_ITEMS] = 0;
+	for (i = 0; i < ARRAY_SIZE(pgscan_direct_events); i++)
+		v[NR_VM_EVENT_ITEMS] += v[pgscan_direct_events[i]];
 #endif
 	return (unsigned long *)m->private + *pos;
 }
@@ -1242,7 +1249,7 @@ static void *vmstat_start(struct seq_file *m, loff_t *pos)
 static void *vmstat_next(struct seq_file *m, void *arg, loff_t *pos)
 {
 	(*pos)++;
-	if (*pos >= ARRAY_SIZE(vmstat_text))
+	if (*pos >= vmstat_proc_count())
 		return NULL;
 	return (unsigned long *)m->private + *pos;
 }
@@ -1252,7 +1259,10 @@ static int vmstat_show(struct seq_file *m, void *arg)
 	unsigned long *l = arg;
 	unsigned long off = l - (unsigned long *)m->private;
 
-	seq_puts(m, vmstat_text[off]);
+	if (off < ARRAY_SIZE(vmstat_text))
+		seq_puts(m, vmstat_text[off]);
+	else
+		seq_puts(m, "pgscan_direct");
 	seq_put_decimal_ull(m, ' ', *l);
 	seq_putc(m, '\n');
 	return 0;
