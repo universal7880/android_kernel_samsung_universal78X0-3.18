@@ -1567,17 +1567,6 @@ static int ep_send_events(struct eventpoll *ep,
 	return ep_scan_ready_list(ep, ep_send_events_proc, &esed, 0, false);
 }
 
-static inline struct timespec ep_set_mstimeout(long ms)
-{
-	struct timespec now, ts = {
-		.tv_sec = ms / MSEC_PER_SEC,
-		.tv_nsec = NSEC_PER_MSEC * (ms % MSEC_PER_SEC),
-	};
-
-	ktime_get_ts(&now);
-	return timespec_add_safe(now, ts);
-}
-
 /**
  * ep_poll - Retrieves ready events, and delivers them to the caller supplied
  *           event buffer.
@@ -1586,17 +1575,14 @@ static inline struct timespec ep_set_mstimeout(long ms)
  * @events: Pointer to the userspace buffer where the ready events should be
  *          stored.
  * @maxevents: Size (in terms of number of events) of the caller event buffer.
- * @timeout: Maximum timeout for the ready events fetch operation, in
- *           milliseconds. If the @timeout is zero, the function will not block,
- *           while if the @timeout is less than zero, the function will block
- *           until at least one event has been retrieved (or an error
- *           occurred).
+ * @end_time: Absolute monotonic deadline. A zero deadline polls without
+ *            waiting, while NULL waits indefinitely.
  *
  * Returns: Returns the number of ready events which have been fetched, or an
  *          error code, in case of error.
  */
 static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
-		   int maxevents, long timeout)
+		   int maxevents, struct timespec *end_time)
 {
 	int res = 0, eavail, timed_out = 0;
 	unsigned long flags;
@@ -1604,13 +1590,11 @@ static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
 	wait_queue_t wait;
 	ktime_t expires, *to = NULL;
 
-	if (timeout > 0) {
-		struct timespec end_time = ep_set_mstimeout(timeout);
-
-		slack = select_estimate_accuracy(&end_time);
+	if (end_time && (end_time->tv_sec || end_time->tv_nsec)) {
+		slack = select_estimate_accuracy(end_time);
+		expires = timespec_to_ktime(*end_time);
 		to = &expires;
-		*to = timespec_to_ktime(end_time);
-	} else if (timeout == 0) {
+	} else if (end_time) {
 		/*
 		 * Avoid the unnecessary trip to the wait queue loop, if the
 		 * caller specified a non blocking operation.
@@ -1966,8 +1950,8 @@ error_return:
  * Implement the event wait interface for the eventpoll file. It is the kernel
  * part of the user space epoll_wait(2).
  */
-SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,
-		int, maxevents, int, timeout)
+static int do_epoll_wait(int epfd, struct epoll_event __user *events,
+			 int maxevents, struct timespec *end_time)
 {
 	int error;
 	struct fd f;
@@ -2001,20 +1985,59 @@ SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,
 	ep = f.file->private_data;
 
 	/* Time to fish for events ... */
-	error = ep_poll(ep, events, maxevents, timeout);
+	error = ep_poll(ep, events, maxevents, end_time);
 
 error_fput:
 	fdput(f);
 	return error;
 }
 
+static struct timespec *epoll_mstimeout(struct timespec *end_time, int timeout)
+{
+	if (timeout < 0)
+		return NULL;
+	poll_select_set_timeout(end_time, timeout / MSEC_PER_SEC,
+				(timeout % MSEC_PER_SEC) * NSEC_PER_MSEC);
+	return end_time;
+}
+
+SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,
+		int, maxevents, int, timeout)
+{
+	struct timespec end_time;
+
+	return do_epoll_wait(epfd, events, maxevents,
+			     epoll_mstimeout(&end_time, timeout));
+}
+
+/* The time64 ABI is identical for native and compat callers. */
+struct epoll_timespec64 {
+	__s64 tv_sec;
+	__s64 tv_nsec;
+};
+
+static int epoll_nstimeout(struct timespec *end_time,
+			   const struct epoll_timespec64 __user *timeout)
+{
+	struct epoll_timespec64 ts;
+
+	if (copy_from_user(&ts, timeout, sizeof(ts)))
+		return -EFAULT;
+	if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= NSEC_PER_SEC)
+		return -EINVAL;
+
+	return poll_select_set_timeout(end_time,
+			min_t(s64, ts.tv_sec, min_t(s64, LONG_MAX, KTIME_SEC_MAX)),
+			ts.tv_nsec);
+}
+
 /*
  * Implement the event wait interface for the eventpoll file. It is the kernel
  * part of the user space epoll_pwait(2).
  */
-SYSCALL_DEFINE6(epoll_pwait, int, epfd, struct epoll_event __user *, events,
-		int, maxevents, int, timeout, const sigset_t __user *, sigmask,
-		size_t, sigsetsize)
+static int do_epoll_pwait(int epfd, struct epoll_event __user *events,
+			  int maxevents, struct timespec *end_time,
+			  const sigset_t __user *sigmask, size_t sigsetsize)
 {
 	int error;
 	sigset_t ksigmask, sigsaved;
@@ -2032,7 +2055,7 @@ SYSCALL_DEFINE6(epoll_pwait, int, epfd, struct epoll_event __user *, events,
 		set_current_blocked(&ksigmask);
 	}
 
-	error = sys_epoll_wait(epfd, events, maxevents, timeout);
+	error = do_epoll_wait(epfd, events, maxevents, end_time);
 
 	/*
 	 * If we changed the signal mask, we need to restore the original one.
@@ -2052,12 +2075,38 @@ SYSCALL_DEFINE6(epoll_pwait, int, epfd, struct epoll_event __user *, events,
 	return error;
 }
 
+SYSCALL_DEFINE6(epoll_pwait, int, epfd, struct epoll_event __user *, events,
+		int, maxevents, int, timeout, const sigset_t __user *, sigmask,
+		size_t, sigsetsize)
+{
+	struct timespec end_time;
+
+	return do_epoll_pwait(epfd, events, maxevents,
+			      epoll_mstimeout(&end_time, timeout), sigmask,
+			      sigsetsize);
+}
+
+SYSCALL_DEFINE6(epoll_pwait2, int, epfd, struct epoll_event __user *, events,
+		int, maxevents, const struct epoll_timespec64 __user *, timeout,
+		const sigset_t __user *, sigmask, size_t, sigsetsize)
+{
+	struct timespec end_time;
+	int err;
+
+	if (timeout) {
+		err = epoll_nstimeout(&end_time, timeout);
+		if (err)
+			return err;
+	}
+	return do_epoll_pwait(epfd, events, maxevents, timeout ? &end_time : NULL,
+			      sigmask, sigsetsize);
+}
+
 #ifdef CONFIG_COMPAT
-COMPAT_SYSCALL_DEFINE6(epoll_pwait, int, epfd,
-			struct epoll_event __user *, events,
-			int, maxevents, int, timeout,
-			const compat_sigset_t __user *, sigmask,
-			compat_size_t, sigsetsize)
+static int do_compat_epoll_pwait(int epfd, struct epoll_event __user *events,
+				 int maxevents, struct timespec *end_time,
+				 const compat_sigset_t __user *sigmask,
+				 compat_size_t sigsetsize)
 {
 	long err;
 	compat_sigset_t csigmask;
@@ -2077,7 +2126,7 @@ COMPAT_SYSCALL_DEFINE6(epoll_pwait, int, epfd,
 		set_current_blocked(&ksigmask);
 	}
 
-	err = sys_epoll_wait(epfd, events, maxevents, timeout);
+	err = do_epoll_wait(epfd, events, maxevents, end_time);
 
 	/*
 	 * If we changed the signal mask, we need to restore the original one.
@@ -2095,6 +2144,37 @@ COMPAT_SYSCALL_DEFINE6(epoll_pwait, int, epfd,
 	}
 
 	return err;
+}
+
+COMPAT_SYSCALL_DEFINE6(epoll_pwait, int, epfd,
+			struct epoll_event __user *, events,
+			int, maxevents, int, timeout,
+			const compat_sigset_t __user *, sigmask,
+			compat_size_t, sigsetsize)
+{
+	struct timespec end_time;
+
+	return do_compat_epoll_pwait(epfd, events, maxevents,
+				     epoll_mstimeout(&end_time, timeout), sigmask,
+				     sigsetsize);
+}
+
+COMPAT_SYSCALL_DEFINE6(epoll_pwait2, int, epfd,
+			struct epoll_event __user *, events, int, maxevents,
+			const struct epoll_timespec64 __user *, timeout,
+			const compat_sigset_t __user *, sigmask,
+			compat_size_t, sigsetsize)
+{
+	struct timespec end_time;
+	int err;
+
+	if (timeout) {
+		err = epoll_nstimeout(&end_time, timeout);
+		if (err)
+			return err;
+	}
+	return do_compat_epoll_pwait(epfd, events, maxevents,
+				     timeout ? &end_time : NULL, sigmask, sigsetsize);
 }
 #endif
 

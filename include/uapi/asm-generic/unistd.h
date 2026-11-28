@@ -711,8 +711,11 @@ __SYSCALL(__NR_bpf, sys_bpf)
 #define __NR_statx 291
 __SYSCALL(__NR_statx, sys_statx)
 
+#define __NR_epoll_pwait2 441
+__SC_COMP(__NR_epoll_pwait2, sys_epoll_pwait2, compat_sys_epoll_pwait2)
+
 #undef __NR_syscalls
-#define __NR_syscalls 292
+#define __NR_syscalls 442
 
 /*
  * All syscalls below here should go away really,
